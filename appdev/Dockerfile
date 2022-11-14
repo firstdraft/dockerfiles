@@ -79,15 +79,30 @@ RUN sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ st
 
 # Install Chromedriver (compatable with Google Chrome version)
 #   See https://gerg.dev/2021/06/making-chromedriver-and-chrome-versions-match-in-a-docker-image/
-RUN BROWSER_MAJOR=$(google-chrome --version | sed 's/Google Chrome \([0-9]*\).*/\1/g') && \
-    wget https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${BROWSER_MAJOR} -O chrome_version && \
-    wget https://chromedriver.storage.googleapis.com/`cat chrome_version`/chromedriver_linux64.zip && \
-    unzip chromedriver_linux64.zip && \
-    sudo mv chromedriver /usr/local/bin/ && \
-    DRIVER_MAJOR=$(chromedriver --version | sed 's/ChromeDriver \([0-9]*\).*/\1/g') && \
-    echo "chrome version: $BROWSER_MAJOR" && \
-    echo "chromedriver version: $DRIVER_MAJOR" && \
-    if [ $BROWSER_MAJOR != $DRIVER_MAJOR ]; then echo "VERSION MISMATCH"; exit 1; fi
+# RUN BROWSER_MAJOR=$(google-chrome --version | sed 's/Google Chrome \([0-9]*\).*/\1/g') && \
+#     wget https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${BROWSER_MAJOR} -O chrome_version && \
+#     wget https://chromedriver.storage.googleapis.com/`cat chrome_version`/chromedriver_linux64.zip && \
+#     unzip chromedriver_linux64.zip && \
+#     sudo mv chromedriver /usr/local/bin/ && \
+#     DRIVER_MAJOR=$(chromedriver --version | sed 's/ChromeDriver \([0-9]*\).*/\1/g') && \
+#     echo "chrome version: $BROWSER_MAJOR" && \
+#     echo "chromedriver version: $DRIVER_MAJOR" && \
+#     if [ $BROWSER_MAJOR != $DRIVER_MAJOR ]; then echo "VERSION MISMATCH"; exit 1; fi
+
+
+# Install Google Chrome
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add - 
+RUN sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+RUN sudo apt-get -y update
+RUN sudo apt-get -y install google-chrome-stable
+# Install Chromedriver
+# RUN sudo apt-get -y install google-chrome-stable
+RUN wget https://chromedriver.storage.googleapis.com/2.41/chromedriver_linux64.zip
+RUN unzip chromedriver_linux64.zip
+
+RUN sudo mv chromedriver /usr/bin/chromedriver
+RUN sudo chown root:root /usr/bin/chromedriver
+RUN sudo chmod +x /usr/bin/chromedriver
 
 # Pre-install gems into /base-rails/gems/
 COPY Gemfile /base-rails/Gemfile
