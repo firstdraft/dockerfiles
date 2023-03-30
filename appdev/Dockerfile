@@ -133,7 +133,7 @@ RUN git config --global push.default upstream \
     && git config --global alias.cob 'checkout -b'
 
 # Alias 'git' to 'g'
-RUN echo 'export PATH="$PATH:$GITHUB_WORKSPACE/bin"' >> ~/.bashrc
+RUN echo 'export PATH="$PATH:$PWD/bin"' >> ~/.bashrc
 RUN echo "# No arguments: 'git status'\n\
 # With arguments: acts like 'git'\n\
 g() {\n\
