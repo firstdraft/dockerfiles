@@ -1,4 +1,4 @@
-FROM --platform=linux/x86_64 buildpack-deps:focal
+FROM buildpack-deps:focal
 
 ### base ###
 RUN yes | unminimize \
