@@ -69,9 +69,13 @@ RUN curl -sSL https://rvm.io/mpapis.asc | gpg --import - \
     && echo '[[ -s "$HOME/.rvm/scripts/rvm" ]] && source "$HOME/.rvm/scripts/rvm" # Load RVM into a shell session *as a function*' >> /home/gitpod/.bashrc.d/70-ruby
 RUN echo "rvm_gems_path=/home/gitpod/.rvm" > ~/.rvmrc
 
+ENV GEM_HOME=/workspace/.rvm
+ENV GEM_PATH=$GEM_HOME:$GEM_PATH
+ENV PATH=/workspace/.rvm/bin:$PATH
+
 USER gitpod
 # AppDev stuff
-RUN /bin/bash -l -c "gem install htmlbeautifier rufo solargraph -N"
+RUN /bin/bash -l -c "gem install htmlbeautifier rufo -N"
 
 # Install Google Chrome
 RUN sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | \
@@ -83,15 +87,28 @@ RUN sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ st
 
 # Install Chromedriver (compatable with Google Chrome version)
 #   See https://gerg.dev/2021/06/making-chromedriver-and-chrome-versions-match-in-a-docker-image/
-RUN BROWSER_MAJOR=$(google-chrome --version | sed 's/Google Chrome \([0-9]*\).*/\1/g') && \
-    wget https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${BROWSER_MAJOR} -O chrome_version && \
-    wget https://chromedriver.storage.googleapis.com/`cat chrome_version`/chromedriver_linux64.zip && \
-    unzip chromedriver_linux64.zip && \
-    sudo mv chromedriver /usr/local/bin/ && \
-    DRIVER_MAJOR=$(chromedriver --version | sed 's/ChromeDriver \([0-9]*\).*/\1/g') && \
-    echo "chrome version: $BROWSER_MAJOR" && \
-    echo "chromedriver version: $DRIVER_MAJOR" && \
-    if [ $BROWSER_MAJOR != $DRIVER_MAJOR ]; then echo "VERSION MISMATCH"; exit 1; fi
+# RUN BROWSER_MAJOR=$(google-chrome --version | sed 's/Google Chrome \([0-9]*\).*/\1/g') && \
+#     wget https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${BROWSER_MAJOR} -O chrome_version && \
+#     wget https://chromedriver.storage.googleapis.com/`cat chrome_version`/chromedriver_linux64.zip && \
+#     unzip chromedriver_linux64.zip && \
+#     sudo mv chromedriver /usr/local/bin/ && \
+#     DRIVER_MAJOR=$(chromedriver --version | sed 's/ChromeDriver \([0-9]*\).*/\1/g') && \
+#     echo "chrome version: $BROWSER_MAJOR" && \
+#     echo "chromedriver version: $DRIVER_MAJOR" && \
+#     if [ $BROWSER_MAJOR != $DRIVER_MAJOR ]; then echo "VERSION MISMATCH"; exit 1; fi
+# Install Google Chrome
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add - 
+RUN sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+RUN sudo apt-get -y update
+RUN sudo apt-get -y install google-chrome-stable
+# Install Chromedriver
+# RUN sudo apt-get -y install google-chrome-stable
+RUN wget https://chromedriver.storage.googleapis.com/2.41/chromedriver_linux64.zip
+RUN unzip chromedriver_linux64.zip
+
+RUN sudo mv chromedriver /usr/bin/chromedriver
+RUN sudo chown root:root /usr/bin/chromedriver
+RUN sudo chmod +x /usr/bin/chromedriver
 
 # Install PostgreSQL
 RUN sudo install-packages postgresql-12 postgresql-contrib-12
@@ -116,18 +133,14 @@ RUN printf "\n# Auto-start PostgreSQL server.\n[[ \$(pg_ctl status | grep PID) ]
 WORKDIR /base-rails
 USER gitpod
 RUN /bin/bash -l -c "sudo apt update && sudo apt install -y graphviz"
+# Install fuser (bin/server) & expect (web_git)
+RUN sudo apt install -y libpq-dev psmisc lsof expect
 
-WORKDIR /base-rails
-COPY Gemfile /base-rails/Gemfile
-COPY Gemfile.lock /base-rails/Gemfile.lock
-# For some reason, the copied files were owned by root so bundle could not succeed
-RUN /bin/bash -l -c "sudo chown -R $(whoami):$(whoami) Gemfile Gemfile.lock"
-RUN /bin/bash -l -c "mkdir gems && bundle config set --local path 'gems'"
-RUN /bin/bash -l -c "gem install bundler:2.2.32"
-
-RUN /bin/bash -l -c "bundle install"
-# Disable skylight dev warning
-RUN /bin/bash -l -c "bundle exec skylight disable_dev_warning"
+# Install Parity
+RUN wget -qO - https://apt.thoughtbot.com/thoughtbot.gpg.key | sudo apt-key add - \
+    && echo "deb http://apt.thoughtbot.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/thoughtbot.list \
+    && sudo apt-get update \
+    && sudo apt-get -y install parity
 
 # Install Node and npm
 RUN curl -fsSL https://deb.nodesource.com/setup_15.x | sudo -E bash - \
@@ -139,24 +152,24 @@ RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add - \
     && sudo apt-get update \
     && sudo apt-get install -y yarn \
     && sudo npm install -g n \
-    && sudo n stable \
+    && sudo n 14 \
     && hash -r
 
-# Install fuser
-RUN sudo apt install -y libpq-dev psmisc lsof
-
-# Install JS dependencies
+WORKDIR /base-rails
+COPY Gemfile /base-rails/Gemfile
+COPY Gemfile.lock /base-rails/Gemfile.lock
 COPY package.json /base-rails/package.json
 COPY yarn.lock /base-rails/yarn.lock
 # For some reason, the copied files were owned by root so bundle could not succeed
-RUN /bin/bash -l -c "sudo chown -R $(whoami):$(whoami) yarn.lock package.json"
-RUN /bin/bash -l -c "yarn"
+RUN /bin/bash -l -c "sudo chown -R $(whoami):$(whoami) Gemfile Gemfile.lock package.json yarn.lock"
+RUN /bin/bash -l -c "gem install bundler:2.2.32 rufo htmlbeautifier --no-document"
 
-# Install parity gem
-RUN wget -qO - https://apt.thoughtbot.com/thoughtbot.gpg.key | sudo apt-key add - \
-    && echo "deb http://apt.thoughtbot.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/thoughtbot.list \
-    && sudo apt-get update \
-    && sudo apt-get -y install parity
+RUN /bin/bash -l -c "mkdir gems && bundle config set --local path 'gems' && bundle install"
+# Disable skylight dev warning
+# RUN /bin/bash -l -c "skylight disable_dev_warning"
+
+# Install JS dependencies
+RUN /bin/bash -l -c "yarn install"
 
 # Install heroku-cli
 RUN /bin/bash -l -c "curl https://cli-assets.heroku.com/install.sh | sh"
@@ -192,6 +205,9 @@ parse_git_branch() {\n\
 }\n\
 \n\
 PS1='\[]0;\u \w\]\[[01;32m\]\u\[[00m\] \[[01;34m\]\w\[[00m\]\[\e[0;38;5;197m\]\$(parse_git_branch)\[\e[0m\] \\\$ '" >> ~/.bashrc
+
+# Alias bundle exec to be
+RUN echo "alias be='bundle exec'" >> ~/.bash_aliases
 
 # Hack to pre-install bundled gems
 RUN echo "rvm use 3.0.3" >> ~/.bashrc
