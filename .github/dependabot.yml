@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /drawing-board
+      - /drawing-board/image
+      - /drawing-board/image/verify
+    schedule:
+      interval: weekly
+  - package-ecosystem: devcontainers
+    directory: /drawing-board/image
+    schedule:
+      interval: weekly

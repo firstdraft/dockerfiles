@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016
+set -euo pipefail
+
+checks="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "${DRAWING_BOARD_PATH:?Set DRAWING_BOARD_PATH to the candidate checkout.}"
+
+# shellcheck disable=SC1091
+source .devcontainer/agent-versions.env
+
+assert_version() {
+  local expected="$1"
+  shift
+  local output
+  if ! output="$("$@" 2>&1)"; then
+    echo "$* failed while checking expected version $expected." >&2
+    exit 1
+  fi
+  local normalized_output
+  normalized_output="$(printf '%s' "$output" | tr '[:space:]' ' ' | tr -s ' ')"
+  if [[ " $normalized_output " != *" $expected "* ]]; then
+    echo "Expected $expected from $*, found: $output" >&2
+    exit 1
+  fi
+}
+
+assert_version "$FIRSTDRAFT_CLI_VERSION" firstdraft --version
+assert_version "$FOUNDATION_RUBY_VERSION" ruby --version
+assert_version "v$FOUNDATION_NODE_VERSION" node --version
+psql --version | grep -Eq "^psql \(PostgreSQL\) ${FOUNDATION_POSTGRES_VERSION}\."
+pg_dump --version | grep -Eq "^pg_dump \(PostgreSQL\) ${FOUNDATION_POSTGRES_VERSION}\."
+docker version >/dev/null
+docker compose version >/dev/null
+
+test -x /usr/sbin/sshd
+sudo /usr/sbin/sshd -t
+sshd_configuration="$(sudo /usr/sbin/sshd -T)"
+for expected in \
+  "authenticationmethods publickey" \
+  "kbdinteractiveauthentication no" \
+  "passwordauthentication no" \
+  "permitrootlogin no" \
+  "port 2222" \
+  "pubkeyauthentication yes" \
+  "usepam yes"; do
+  grep -Fx "${expected}" <<<"${sshd_configuration}" >/dev/null
+done
+pgrep -x sshd >/dev/null
+
+shared_path="$(node -e '
+  const {parseEnv} = require("node:util");
+  const environment = parseEnv(require("node:fs").readFileSync("/etc/environment", "utf8"));
+  process.stdout.write(environment.PATH ?? "");
+')"
+test "${shared_path#"$PWD/bin:$HOME/.local/bin:"}" != "$shared_path"
+test "$(PATH="$shared_path" command -v firstdraft)" = "$PWD/bin/firstdraft"
+test "$(PATH="$shared_path" command -v claude)" = "$HOME/.local/bin/claude"
+test "$(PATH="$shared_path" command -v codex)" = "$HOME/.local/bin/codex"
+
+"${checks}/agent-smoke"
+
+test "$(command -v firstdraft)" = "$PWD/bin/firstdraft"
+test "$(ruby -rrbconfig -e 'print RbConfig.ruby')" = "$(mise which ruby)"
+test ! -L .env
+test -f .env
+test -O .env
+test "$(stat -c '%a' .env)" = "600"
+
+FIRSTDRAFT_STAGING_API_URL="$FIRSTDRAFT_STAGING_API_URL" node -e '
+  const {parseEnv} = require("node:util");
+  const parsed = parseEnv(require("node:fs").readFileSync(".env", "utf8"));
+  const valid = Object.keys(parsed).sort().join(",") ===
+      "FIRSTDRAFT_API_TOKEN,FIRSTDRAFT_API_URL" &&
+    parsed.FIRSTDRAFT_API_URL === process.env.FIRSTDRAFT_STAGING_API_URL &&
+    parsed.FIRSTDRAFT_API_TOKEN === "";
+  process.exit(valid ? 0 : 1);
+'
+
+test "$DB_HOST" = "postgres"
+test "$SELENIUM_HOST" = "selenium"
+test "$CAPYBARA_SERVER_HOST" = "rails-app"
+PGPASSWORD=postgres pg_isready --host "$DB_HOST" --username postgres >/dev/null
+postgres_version="$(PGPASSWORD=postgres psql --host "$DB_HOST" --username postgres --dbname postgres --tuples-only --no-align --command 'SHOW server_version')"
+[[ "$postgres_version" == "$FOUNDATION_POSTGRES_VERSION."* ]]
+
+if "${checks}/selenium" running; then
+  echo "Selenium must stay stopped until generated browser tests request it." >&2
+  exit 1
+else
+  selenium_status=$?
+  if [[ "${selenium_status}" -ne 1 ]]; then
+    echo "Could not verify that Selenium is stopped." >&2
+    exit "${selenium_status}"
+  fi
+fi
+
+echo "Devcontainer installation smoke passed."

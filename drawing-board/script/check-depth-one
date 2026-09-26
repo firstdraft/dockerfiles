@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+checks="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+root="${DRAWING_BOARD_PATH:?Set DRAWING_BOARD_PATH to the candidate checkout.}"
+head="$(git -C "${root}" rev-parse HEAD)"
+source_commit="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1])).source.commit)' "${checks}/../image/receipt.json")"
+scratch="$(mktemp -d /tmp/firstdraft-drawing-board-depth-one.XXXXXX)"
+temporary_ref="refs/firstdraft/depth-one-$$-${RANDOM}"
+temporary_ref_created=false
+cleanup() {
+  if [[ "${temporary_ref_created}" == true ]]; then
+    git -C "${root}" update-ref -d "${temporary_ref}" "${head}" >/dev/null 2>&1 || true
+  fi
+  case "${scratch}" in
+    /tmp/firstdraft-drawing-board-depth-one.*) rm -rf -- "${scratch}" ;;
+  esac
+}
+trap cleanup EXIT
+
+git -C "${root}" update-ref "${temporary_ref}" "${head}" ""
+temporary_ref_created=true
+git init --quiet "${scratch}/repo"
+git -C "${scratch}/repo" remote add origin "file://${root}"
+git -C "${scratch}/repo" fetch --quiet --no-tags --depth=1 origin "${temporary_ref}"
+git -C "${scratch}/repo" checkout --quiet --detach FETCH_HEAD
+
+if [[ "$(git -C "${scratch}/repo" rev-list --count HEAD)" != "1" ]]; then
+  echo "The depth-one receipt regression fetched more than one commit." >&2
+  exit 1
+fi
+if git -C "${scratch}/repo" cat-file -e "${source_commit}^{commit}" 2>/dev/null; then
+  echo "The depth-one receipt regression unexpectedly fetched the image-source commit." >&2
+  exit 1
+fi
+
+cd "${scratch}/repo"
+FIRSTDRAFT_REQUIRE_IMAGE_SOURCE_COMMIT=0 node "${checks}/check-image-receipt.mjs"
+echo "Depth-one development-image receipt contract passed."
