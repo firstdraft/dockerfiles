@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+metadata_only=false
+if [[ "${1:-}" == "--metadata-only" ]]; then
+  metadata_only=true
+  shift
+fi
+
+image="${1:?Usage: script/devcontainer-image-smoke [--metadata-only] IMAGE@sha256:DIGEST}"
+case "${image}" in
+  *@sha256:[0-9a-f][0-9a-f]*|sha256:[0-9a-f][0-9a-f]*) ;;
+  *)
+    echo "The development-image smoke requires an immutable image reference." >&2
+    exit 1
+    ;;
+esac
+
+repo_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+root="$(mktemp -d)"
+containers=()
+cleanup() {
+  if ((${#containers[@]})); then
+    docker rm --force "${containers[@]}" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${root}"
+}
+trap cleanup EXIT
+
+docker image inspect "${image}" > "${root}/image-inspect.json"
+node - "${root}/image-inspect.json" "${repo_root}/../image/.devcontainer-lock.json" <<'NODE'
+const fs = require("node:fs");
+const [inspectPath, lockPath] = process.argv.slice(2);
+const inspect = JSON.parse(fs.readFileSync(inspectPath, "utf8"));
+const lockfile = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+if (inspect.length !== 1) throw new Error("Expected one inspected development image.");
+const rawMetadata = inspect[0]?.Config?.Labels?.["devcontainer.metadata"];
+if (!rawMetadata) throw new Error("The development image has no devcontainer.metadata label.");
+const metadata = JSON.parse(rawMetadata);
+const entries = Array.isArray(metadata) ? metadata : [metadata];
+const installedIds = entries.filter((entry) => entry?.id).map((entry) => entry.id);
+const lockedFeatures = Object.entries(lockfile.features ?? {});
+const lockedIds = lockedFeatures.map(([id]) => id);
+if (lockedIds.length === 0) throw new Error("The development-image lockfile has no Features.");
+for (const [id, feature] of lockedFeatures) {
+  const integrity = feature?.integrity;
+  const resolved = feature?.resolved;
+  if (!/^sha256:[0-9a-f]{64}$/.test(integrity ?? "")) {
+    throw new Error(`The lockfile must bind an exact integrity digest for ${id}.`);
+  }
+  if (resolved !== `${id.replace(/:\d+$/, "")}@${integrity}`) {
+    throw new Error(`The lockfile resolved reference does not match its integrity digest for ${id}.`);
+  }
+}
+for (const id of lockedIds) {
+  if (installedIds.filter((installed) => installed === id).length !== 1) {
+    throw new Error(`Published Feature metadata must contain ${id} exactly once.`);
+  }
+  const feature = id.replace(/:\d+$/, "");
+  if (installedIds.some((installed) => installed !== id && installed.replace(/:\d+$/, "") === feature)) {
+    throw new Error(`Published Feature metadata contains a different major for ${id}.`);
+  }
+}
+const sshd = entries.find((entry) => entry?.id === "ghcr.io/devcontainers/features/sshd:1");
+if (sshd?.entrypoint !== "/usr/local/share/ssh-init.sh") {
+  throw new Error("The maintained sshd Feature entrypoint is absent from image metadata.");
+}
+NODE
+
+if [[ "${metadata_only}" == true ]]; then
+  echo "Development image locked Feature-ID metadata passed."
+  exit 0
+fi
+
+postgresql_clients=()
+default_container="drawing-board-image-smoke-default-$$"
+containers+=("${default_container}")
+docker run --detach --name "${default_container}" "${image}" >/dev/null
+[[ "$(docker inspect --format '{{.State.Running}}' "${default_container}")" == "true" ]] || {
+  echo "The development image did not remain running with its default command." >&2
+  exit 1
+}
+
+container="drawing-board-image-smoke-$$"
+containers+=("${container}")
+docker run --detach --name "${container}" --publish 127.0.0.1::2222 \
+  --entrypoint /usr/local/share/ssh-init.sh "${image}" sleep infinity >/dev/null
+[[ "$(docker inspect --format '{{.State.Running}}' "${container}")" == "true" ]] || {
+  echo "The development image did not remain running with the maintained sshd Feature entrypoint." >&2
+  exit 1
+}
+for _attempt in {1..20}; do
+  if docker exec "${container}" pgrep -x sshd >/dev/null; then
+    break
+  fi
+  [[ "$(docker inspect --format '{{.State.Running}}' "${container}")" == "true" ]] || {
+    echo "The development image exited while starting the maintained SSH listener." >&2
+    exit 1
+  }
+  sleep 0.25
+done
+docker exec "${container}" pgrep -x sshd >/dev/null || {
+  echo "The maintained sshd Feature did not start its listener." >&2
+  exit 1
+}
+docker exec --user root "${container}" /usr/sbin/sshd -t
+sshd_configuration="$(docker exec --user root "${container}" /usr/sbin/sshd -T)"
+for expected in \
+  "authenticationmethods publickey" \
+  "kbdinteractiveauthentication no" \
+  "passwordauthentication no" \
+  "permitrootlogin no" \
+  "port 2222" \
+  "pubkeyauthentication yes" \
+  "usepam yes"; do
+  grep -Fx "${expected}" <<<"${sshd_configuration}" >/dev/null || {
+    echo "The maintained SSH listener is missing: ${expected}." >&2
+    exit 1
+  }
+done
+
+host_port="$(docker port "${container}" 2222/tcp | sed -nE 's/^127\.0\.0\.1:([0-9]+)$/\1/p')"
+[[ "${host_port}" =~ ^[0-9]+$ ]] || {
+  echo "The maintained SSH listener exposed no loopback port." >&2
+  exit 1
+}
+SSH_PORT="${host_port}" node <<'NODE'
+const net = require("node:net");
+const socket = net.createConnection({host: "127.0.0.1", port: Number(process.env.SSH_PORT)});
+let bytes = "";
+let complete = false;
+const fail = (message) => {
+  if (complete) return;
+  complete = true;
+  console.error(message);
+  process.exitCode = 1;
+  socket.destroy();
+};
+socket.setTimeout(5_000, () => fail("The maintained SSH listener sent no banner."));
+socket.on("error", (error) => fail(`The maintained SSH listener could not be reached: ${error.message}`));
+socket.on("end", () => fail("The maintained SSH listener closed without a complete banner."));
+socket.on("close", () => fail("The maintained SSH listener closed without a complete banner."));
+socket.on("data", (chunk) => {
+  bytes += chunk;
+  const newline = bytes.indexOf("\n");
+  if (newline === -1) return;
+  const banner = bytes.slice(0, newline).trim();
+  if (!banner.startsWith("SSH-2.0-OpenSSH_")) fail(`Unexpected SSH banner: ${banner}`);
+  if (complete) return;
+  complete = true;
+  console.log(banner);
+  socket.destroy();
+});
+NODE
+
+psql_version="$(docker exec "${container}" psql --version)"
+pg_dump_version="$(docker exec "${container}" pg_dump --version)"
+printf '%s\n%s\n' "${psql_version}" "${pg_dump_version}"
+psql_release="$(sed -nE 's/^psql \(PostgreSQL\) (18\.[0-9]+).*$/\1/p' <<<"${psql_version}")"
+pg_dump_release="$(sed -nE 's/^pg_dump \(PostgreSQL\) (18\.[0-9]+).*$/\1/p' <<<"${pg_dump_version}")"
+[[ -n "${psql_release}" && "${psql_release}" == "${pg_dump_release}" ]] || {
+  echo "The development image did not expose matching PostgreSQL 18 client releases." >&2
+  exit 1
+}
+postgresql_clients+=("${psql_release}")
+[[ "$(docker inspect --format '{{.State.Running}}' "${default_container}")" == "true" ]] || {
+  echo "The development image did not stay running with its default command." >&2
+  exit 1
+}
+
+echo "Development image default command, maintained-SSH lifecycle, and PostgreSQL ${postgresql_clients[0]} clients passed."

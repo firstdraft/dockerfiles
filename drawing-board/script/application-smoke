@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+checks="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+root="$(cd -P "${DRAWING_BOARD_PATH:?Set DRAWING_BOARD_PATH to the candidate checkout.}" && pwd -P)"
+application_root="${root}/application"
+
+unset GIT_DIR \
+  GIT_WORK_TREE \
+  GIT_INDEX_FILE \
+  GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  GIT_COMMON_DIR \
+  GIT_NAMESPACE
+
+if [[ ! -x "${application_root}/bin/setup" || ! -x "${application_root}/bin/ci" ]]; then
+  echo "Expected a generated Rails Foundation under ${application_root}." >&2
+  exit 1
+fi
+
+application_root="$(cd -P "${application_root}" && pwd -P)"
+case "${application_root}" in
+  "${root}"/*) ;;
+  *)
+    echo "The generated application must resolve inside the Drawing Board." >&2
+    exit 1
+    ;;
+esac
+application_git_root="$(git -C "${application_root}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "${application_git_root}" ]]; then
+  echo "Initialize the generated application with script/initialize-application before running its CI." >&2
+  exit 1
+fi
+application_git_root="$(cd -P "${application_git_root}" && pwd -P)"
+if [[ "${application_git_root}" != "${application_root}" ]]; then
+  echo "The generated application Git repository must resolve at its physical application root." >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1091
+source "${root}/.devcontainer/agent-versions.env"
+
+selenium_started=false
+server_pid=""
+cleanup() {
+  local exit_status=$?
+  trap - EXIT
+  if [[ -n "${server_pid}" ]]; then
+    kill "${server_pid}" >/dev/null 2>&1 || true
+    wait "${server_pid}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${selenium_started}" == true ]]; then
+    if ! "${checks}/selenium" stop; then
+      echo "Could not stop the Selenium service started by the application smoke." >&2
+      if [[ "${exit_status}" -eq 0 ]]; then
+        exit_status=1
+      fi
+    fi
+  fi
+  exit "${exit_status}"
+}
+trap cleanup EXIT
+
+if "${checks}/selenium" running; then
+  selenium_started=false
+else
+  selenium_status=$?
+  case "${selenium_status}" in
+    1)
+      selenium_started=true
+      ;;
+    *)
+      echo "Could not determine whether Selenium was already running." >&2
+      exit "${selenium_status}"
+      ;;
+  esac
+fi
+"${checks}/selenium" start
+
+cd "${application_root}"
+
+expected_ruby="$(tr -d '\r\n' < .ruby-version)"
+expected_ruby="${expected_ruby#ruby-}"
+expected_node="$(tr -d '\r\n' < .node-version)"
+actual_ruby="$(ruby -e 'print RUBY_VERSION')"
+actual_node="$(node --version)"
+actual_node="${actual_node#v}"
+
+[[ "${expected_ruby}" == "${FOUNDATION_RUBY_VERSION}" ]] || {
+  echo "Generated Foundation expects Ruby ${expected_ruby}; the Drawing Board provides ${FOUNDATION_RUBY_VERSION}." >&2
+  exit 1
+}
+[[ "${expected_node}" == "${FOUNDATION_NODE_VERSION}" ]] || {
+  echo "Generated Foundation expects Node ${expected_node}; the Drawing Board provides ${FOUNDATION_NODE_VERSION}." >&2
+  exit 1
+}
+[[ "${actual_ruby}" == "${expected_ruby}" ]] || {
+  echo "Expected Ruby ${expected_ruby}, got ${actual_ruby}." >&2
+  exit 1
+}
+[[ "${actual_node}" == "${expected_node}" ]] || {
+  echo "Expected Node ${expected_node}, got ${actual_node}." >&2
+  exit 1
+}
+
+bin/setup --skip-server
+
+postgres_version="$(bin/rails runner 'print ActiveRecord::Base.connection.select_value("SHOW server_version")')"
+[[ "${postgres_version}" == "${FOUNDATION_POSTGRES_VERSION}."* ]] || {
+  echo "Expected PostgreSQL ${FOUNDATION_POSTGRES_VERSION}, got ${postgres_version}." >&2
+  exit 1
+}
+
+bin/rails server --binding 127.0.0.1 --port 3100 >tmp/drawing-board-application-server.log 2>&1 &
+server_pid=$!
+
+ready_status=""
+for _ in {1..60}; do
+  ready_status="$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3100/ready || true)"
+  [[ "${ready_status}" == "200" ]] && break
+  kill -0 "${server_pid}" >/dev/null 2>&1 || {
+    cat tmp/drawing-board-application-server.log >&2
+    exit 1
+  }
+  sleep 1
+done
+[[ "${ready_status}" == "200" ]] || {
+  cat tmp/drawing-board-application-server.log >&2
+  echo "Generated Foundation did not become ready." >&2
+  exit 1
+}
+
+kill "${server_pid}" >/dev/null 2>&1 || true
+wait "${server_pid}" >/dev/null 2>&1 || true
+server_pid=""
+
+CI=1 bin/ci
+
+echo "Generated application setup, PostgreSQL, readiness, and CI passed."

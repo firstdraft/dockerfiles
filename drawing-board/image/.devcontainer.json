@@ -1,0 +1,16 @@
+{
+  "name": "First Draft Drawing Board development image",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/rails/devcontainer/features/activestorage:1": {},
+    "ghcr.io/devcontainers/features/node:1": { "version": "24.18.0" },
+    "ghcr.io/devcontainers/features/sshd:1": {},
+    "ghcr.io/rails/devcontainer/features/postgres-client:1": { "version": "18" }
+  },
+  "remoteUser": "vscode"
+}

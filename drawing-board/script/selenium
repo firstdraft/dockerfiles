@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+checks="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+root="$(cd -P "${DRAWING_BOARD_PATH:?Set DRAWING_BOARD_PATH to the candidate checkout.}" && pwd -P)"
+compose_file="${root}/.devcontainer/compose.yaml"
+
+container_id="${HOSTNAME:-$(hostname)}"
+project="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "${container_id}" 2>/dev/null || true)"
+if [[ -z "${project}" || ! "${project}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+  echo "Run this helper inside the Drawing Board Dev Container." >&2
+  exit 2
+fi
+
+case "${1:-start}" in
+  start)
+    docker compose --project-name "${project}" --file "${compose_file}" up --detach --wait selenium
+    for _ in {1..60}; do
+      status="$(curl --silent --show-error --fail http://selenium:4444/wd/hub/status 2>/dev/null || true)"
+      if node -e '
+        const input = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+        process.exit(input.value?.ready === true ? 0 : 1);
+      ' <<<"${status}" 2>/dev/null; then
+        exit 0
+      fi
+      sleep 1
+    done
+    docker compose --project-name "${project}" --file "${compose_file}" logs selenium >&2
+    echo "Selenium did not become ready." >&2
+    exit 1
+    ;;
+  status)
+    docker compose --project-name "${project}" --file "${compose_file}" ps selenium
+    ;;
+  running)
+    if ! running_services="$(docker compose --project-name "${project}" --file "${compose_file}" ps --status running --services selenium)"; then
+      echo "Could not determine the Selenium service state." >&2
+      exit 2
+    fi
+    [[ "${running_services}" == "selenium" ]]
+    ;;
+  stop)
+    docker compose --project-name "${project}" --file "${compose_file}" stop selenium
+    ;;
+  *)
+    echo "Usage: script/selenium [start|status|running|stop]" >&2
+    exit 1
+    ;;
+esac

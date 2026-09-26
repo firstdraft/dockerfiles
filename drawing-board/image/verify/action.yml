@@ -1,0 +1,21 @@
+name: Verify Drawing Board image
+description: Verify the candidate after the caller's build job finishes publishing
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+    - name: Verify the published platforms
+      shell: bash
+      env:
+        IMAGE: ghcr.io/firstdraft/drawing-board-workspace:sha-${{ github.sha }}
+        IMAGE_TOOLS: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        index="$(docker buildx imagetools inspect --raw "$IMAGE")"
+        amd64="$(jq -er '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' <<< "$index")"
+        arm64="$(jq -er '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' <<< "$index")"
+        [[ "$(jq '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))] | length' <<< "$index")" == 2 ]]
+        docker pull --platform linux/amd64 "${IMAGE%:*}@$amd64"
+        "$IMAGE_TOOLS/../../script/devcontainer-image-smoke" "${IMAGE%:*}@$amd64"
+        docker pull --platform linux/arm64 "${IMAGE%:*}@$arm64"
+        "$IMAGE_TOOLS/../../script/devcontainer-image-smoke" --metadata-only "${IMAGE%:*}@$arm64"

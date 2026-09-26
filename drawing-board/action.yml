@@ -1,0 +1,44 @@
+name: Check Drawing Board
+description: Check the caller's exact Drawing Board checkout in its own Dev Container
+inputs:
+  workspace:
+    description: Relative path to the Drawing Board candidate checkout
+    default: .
+runs:
+  using: composite
+  steps:
+    - name: Stage external checks in the disposable checkout
+      id: checks
+      shell: bash
+      working-directory: ${{ inputs.workspace }}
+      env:
+        CHECKS_SOURCE: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        mkdir -p tmp
+        directory="$(mktemp -d tmp/drawing-board-checks.XXXXXX)"
+        cp -R "$CHECKS_SOURCE/script" "$CHECKS_SOURCE/image" "$directory/"
+        echo "directory=$directory" >> "$GITHUB_OUTPUT"
+    - uses: devcontainers/ci@513af61f4de4f75d37e4438f184ba4358f0fc1ca # v0.3.1900000450
+      with:
+        subFolder: ${{ inputs.workspace }}
+        push: never
+        runCmd: |
+          set -euo pipefail
+          export DRAWING_BOARD_PATH="$PWD"
+          checks="${{ steps.checks.outputs.directory }}/script"
+          FIRSTDRAFT_REQUIRE_IMAGE_SOURCE_COMMIT=1 "$checks/check" "$PWD"
+          "$checks/devcontainer-smoke"
+          "$checks/devcontainer-smoke"
+    - name: Remove the staged checks
+      if: always()
+      shell: bash
+      working-directory: ${{ inputs.workspace }}
+      env:
+        CHECK_DIRECTORY: ${{ steps.checks.outputs.directory }}
+      run: |
+        case "$CHECK_DIRECTORY" in
+          tmp/drawing-board-checks.*) rm -rf -- "$CHECK_DIRECTORY" ;;
+          "") ;;
+          *) echo "Unexpected check directory: $CHECK_DIRECTORY" >&2; exit 1 ;;
+        esac

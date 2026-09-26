@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+checks="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+export DRAWING_BOARD_PATH="$(cd -P "${1:?Usage: check DRAWING_BOARD_CHECKOUT}" && pwd -P)"
+export DRAWING_BOARD_CHECKS="$checks"
+cd "$DRAWING_BOARD_PATH"
+
+# Keep these shared configurations in strict JSON, a machine-checkable subset
+# of the JSONC accepted by the devcontainer reader.
+node -e '
+  const fs = require("node:fs");
+  for (const path of [
+    ".devcontainer/devcontainer.json",
+    process.env.DRAWING_BOARD_CHECKS + "/../image/.devcontainer.json",
+    process.env.DRAWING_BOARD_CHECKS + "/../image/.devcontainer-lock.json",
+    process.env.DRAWING_BOARD_CHECKS + "/../image/receipt.json",
+  ]) JSON.parse(fs.readFileSync(path, "utf8"));
+'
+
+node <<'NODE'
+const fs = require("node:fs");
+const runtimeConfiguration = JSON.parse(fs.readFileSync(".devcontainer/devcontainer.json", "utf8"));
+const imageConfiguration = JSON.parse(fs.readFileSync(process.env.DRAWING_BOARD_CHECKS + "/../image/.devcontainer.json", "utf8"));
+const lockfile = JSON.parse(fs.readFileSync(process.env.DRAWING_BOARD_CHECKS + "/../image/.devcontainer-lock.json", "utf8"));
+const expectedFeatures = [
+  "ghcr.io/devcontainers/features/docker-outside-of-docker:1",
+  "ghcr.io/devcontainers/features/github-cli:1",
+  "ghcr.io/rails/devcontainer/features/activestorage:1",
+  "ghcr.io/devcontainers/features/node:1",
+  "ghcr.io/devcontainers/features/sshd:1",
+  "ghcr.io/rails/devcontainer/features/postgres-client:1",
+].sort();
+const configuredFeatures = Object.keys(imageConfiguration.features ?? {}).sort();
+const lockedFeatures = Object.keys(lockfile.features ?? {}).sort();
+if (JSON.stringify(configuredFeatures) !== JSON.stringify(expectedFeatures) ||
+    JSON.stringify(lockedFeatures) !== JSON.stringify(expectedFeatures)) {
+  console.error("The devcontainer features and lockfile must contain the exact reviewed feature set.");
+  process.exit(1);
+}
+for (const feature of expectedFeatures) {
+  const entry = lockfile.features[feature];
+  const resolvedPrefix = `${feature.replace(/:\d+$/, "")}@sha256:`;
+  if (!/^\d+\.\d+\.\d+$/.test(entry?.version ?? "") ||
+      !entry?.resolved?.startsWith(resolvedPrefix) ||
+      !/^[0-9a-f]{64}$/.test(entry.resolved.slice(resolvedPrefix.length)) ||
+      entry.integrity !== entry.resolved.split("@")[1]) {
+    console.error(`The lockfile entry for ${feature} is incomplete.`);
+    process.exit(1);
+  }
+}
+if ("features" in runtimeConfiguration || fs.existsSync(".devcontainer/devcontainer-lock.json")) {
+  console.error("Runtime Features must come only from the pinned development image.");
+  process.exit(1);
+}
+if (imageConfiguration.features["ghcr.io/devcontainers/features/docker-outside-of-docker:1"]?.moby !== false) {
+  console.error("The trixie-based development image must use Docker CE, not Moby.");
+  process.exit(1);
+}
+if (imageConfiguration.features["ghcr.io/rails/devcontainer/features/postgres-client:1"]?.version !== "18") {
+  console.error("The development image must install the PostgreSQL 18 client tools.");
+  process.exit(1);
+}
+if (!fs.readFileSync(process.env.DRAWING_BOARD_CHECKS + "/../image/.devcontainer-lock.json", "utf8").endsWith("\n")) {
+  console.error("The development-image lockfile must end with a newline.");
+  process.exit(1);
+}
+NODE
+
+node "$checks/check-image-receipt.mjs"
+
+# shellcheck disable=SC1091
+source .devcontainer/agent-versions.env
+
+for script in .devcontainer/setup-agents bin/agent-doctor bin/review-plan-with-claude bin/review-plan-with-codex script/initialize-application script/refresh-codespaces-private-port; do
+  bash -n "$script"
+  test -x "$script"
+done
+for script in "$checks"/{check,agent-smoke,devcontainer-smoke,devcontainer-image-smoke,application-smoke,selenium,check-depth-one}; do
+  bash -n "$script"
+  test -x "$script"
+done
+for javascript in .devcontainer/*.mjs bin/firstdraft script/*.mjs "$checks"/*.mjs; do
+  node --check "$javascript"
+done
+test -x bin/firstdraft
+for check in check-firstdraft-wrapper check-agent-skills check-agent-setup check-initialize-application; do
+  node "$checks/$check.mjs"
+done
+
+expected_bin_entries=$'bin/agent-doctor\nbin/firstdraft\nbin/review-plan-with-claude\nbin/review-plan-with-codex'
+actual_bin_entries="$(find bin -mindepth 1 -maxdepth 1 -print | sort)"
+if [[ "$actual_bin_entries" != "$expected_bin_entries" ]]; then
+  echo "Review the devcontainer PATH contract before adding another file under bin/." >&2
+  exit 1
+fi
+
+if [[ "$(cat .env.example)" != $'FIRSTDRAFT_API_URL=https://staging.firstdraft.com\nFIRSTDRAFT_API_TOKEN=' ]]; then
+  echo ".env.example must select staging and leave its token blank." >&2
+  exit 1
+fi
+if ! git check-ignore --quiet .env || git ls-files --error-unmatch .env >/dev/null 2>&1; then
+  echo ".env must be ignored and untracked." >&2
+  exit 1
+fi
+
+workspace_path="$(node -e '
+  const configuration = JSON.parse(require("node:fs").readFileSync(".devcontainer/devcontainer.json"));
+  process.stdout.write(configuration.remoteEnv?.PATH ?? "");
+')"
+if [[ "$workspace_path" != '${containerWorkspaceFolder}/bin:/home/vscode/.local/bin:${containerEnv:PATH}' ]]; then
+  echo "The devcontainer PATH must prefer the Drawing Board wrapper." >&2
+  exit 1
+fi
+
+node <<'NODE'
+const fs = require("node:fs");
+const configuration = JSON.parse(fs.readFileSync(".devcontainer/devcontainer.json", "utf8"));
+const compose = fs.readFileSync(".devcontainer/compose.yaml", "utf8");
+const dockerfile = fs.readFileSync(process.env.DRAWING_BOARD_CHECKS + "/../image/Dockerfile", "utf8");
+const imageReceipt = JSON.parse(fs.readFileSync(process.env.DRAWING_BOARD_CHECKS + "/../image/receipt.json", "utf8"));
+const required = (condition, message) => {
+  if (!condition) {
+    console.error(message);
+    process.exit(1);
+  }
+};
+
+required(configuration.dockerComposeFile === "compose.yaml", "The Drawing Board must use its reviewed Compose stack.");
+required(configuration.service === "rails-app", "The Dev Container must attach to rails-app.");
+required(JSON.stringify(configuration.runServices) === JSON.stringify(["rails-app", "postgres"]), "Only the workspace and PostgreSQL may start by default.");
+required(configuration.workspaceFolder === "/workspaces/drawing-board", "The workspace path must stay stable.");
+required(configuration.remoteUser === "vscode", "The Rails runtime uses the non-root vscode user.");
+required(JSON.stringify(configuration.customizations?.vscode?.settings) ===
+  JSON.stringify({ "extensions.supportNodeGlobalNavigator": true }),
+  "The remote extension host settings must contain only the reviewed navigator migration setting.");
+required(configuration.containerEnv?.DB_HOST === "postgres", "Generated Foundations must reach PostgreSQL by service name.");
+required(configuration.containerEnv?.SELENIUM_HOST === "selenium", "Generated system tests must reach Selenium by service name.");
+required(JSON.stringify(configuration.forwardPorts) === JSON.stringify([3000, 5432]), "Rails and PostgreSQL ports must be forwarded.");
+required(compose.includes("- ..:/workspaces/drawing-board:cached"), "Compose must mount the complete Drawing Board.");
+required(compose.includes(`${imageReceipt.publication.package}@${imageReceipt.publication.manifest}`), "The workspace image must match its immutable receipt.");
+required(imageReceipt.publication.visibility === "public", "The workspace image must retain its observed public visibility.");
+required(imageReceipt.publication.anonymous_pull === "passed", "The exact workspace image must retain its anonymous-pull observation.");
+required(imageReceipt.publication.comparison_codespace === "passed", "The exact workspace image must retain its comparison-Codespace observation.");
+required(imageReceipt.verification?.platforms?.["linux/arm64"]?.runtime === "not_observed", "The reviewed image must not claim arm64 runtime proof without a retained observation.");
+required(compose.includes("- postgres-data:/var/lib/postgresql"), "PostgreSQL 18 data must use its parent volume target.");
+required(compose.includes("condition: service_healthy"), "The workspace must wait for PostgreSQL readiness.");
+required(!/^\s{6}selenium:\s*$/m.test(compose.split("  selenium:")[0]), "Selenium must not block ordinary workspace startup.");
+required(compose.includes("selenium/standalone-chromium:4.47.0-20260808@sha256:1d3d834a2ce93f26cc0d0ae3c61abd189755b32649f5c356c6c5cf9502aa397e"), "Selenium must use the reviewed release and image digest.");
+required(!compose.split("  selenium:")[1].split("  postgres:")[0].includes("restart:"), "Selenium must remain stopped after a workspace restart until requested again.");
+required(dockerfile.includes("ARG RUBY_VERSION=4.0.5"), "The Drawing Board Ruby image must match generated Foundations.");
+required(dockerfile.includes("ghcr.io/rails/devcontainer/images/ruby:$RUBY_VERSION@sha256:e1bd336b0f49207a2a235299f7163bf00687b24582b911be21a58f0e5c1198cd"), "Use the reviewed Rails Dev Container image digest.");
+required(!dockerfile.includes("apt-get install") && !dockerfile.includes("openssh-server"), "OpenSSH lifecycle must remain owned by the maintained sshd Feature.");
+required(!dockerfile.includes("ENTRYPOINT"), "The Dockerfile must not replace the maintained Feature entrypoint chain.");
+required(dockerfile.includes("'AuthenticationMethods publickey'") &&
+  dockerfile.includes("'PermitRootLogin no'") &&
+  dockerfile.includes("'PasswordAuthentication no'") &&
+  dockerfile.includes("'KbdInteractiveAuthentication no'"), "The official SSH listener must remain key-only and non-root.");
+required(dockerfile.includes('CMD ["sleep", "infinity"]'), "The published image must remain running when no command is supplied.");
+
+NODE
+
+node "$checks/check-codespaces-private-port.mjs"
+node "$checks/check-codex-configuration.mjs"
+
+if ! git check-ignore --quiet application/example; then
+  echo "Generated application output must remain outside the Drawing Board Git repository." >&2
+  exit 1
+fi
+
+"$checks/check-depth-one"
+
+if [[ "$FIRSTDRAFT_CLI_DEFAULT_API_URL" != "https://firstdraft.com" || \
+  "$FIRSTDRAFT_STAGING_API_URL" != "https://staging.firstdraft.com" ]]; then
+  echo "The pinned releases no longer match the documented staging-wrapper contract." >&2
+  exit 1
+fi
+
+if ! grep -Fqx "ARG RUBY_VERSION=$FOUNDATION_RUBY_VERSION" "$checks/../image/Dockerfile" || \
+  ! grep -Fq "\"ghcr.io/devcontainers/features/node:1\": { \"version\": \"$FOUNDATION_NODE_VERSION\" }" "$checks/../image/.devcontainer.json" || \
+  ! grep -Fqx "    image: postgres:$FOUNDATION_POSTGRES_VERSION" .devcontainer/compose.yaml; then
+  echo "The Drawing Board runtime pins must match the current generated Foundation." >&2
+  exit 1
+fi
+
+if [[ -e .claude/settings.json ]]; then
+  echo "Claude settings must remain user-scoped, not committed to the Drawing Board." >&2
+  exit 1
+fi
+
+if [[ "$FIRSTDRAFT_CLAUDE_SKILL_NAME" != "create-full-stack-app" ]]; then
+  echo "The Claude Skill name must match the canonical Skill." >&2
+  exit 1
+fi
+if [[ "$FIRSTDRAFT_CODEX_SKILL_NAME" != "firstdraft:create-full-stack-app" ]]; then
+  echo "The Codex Skill name must match the canonical namespaced Skill." >&2
+  exit 1
+fi
+
+if [[ ! "$FIRSTDRAFT_SKILLS_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "The First Draft Skill revision must be one exact commit SHA." >&2
+  exit 1
+fi
+
+if [[ ! "$FIRSTDRAFT_CLI_VERSION" =~ ^0\.[0-9]+\.[0-9]+$ ]]; then
+  echo "The First Draft CLI version must use ordinary pre-1.0 SemVer." >&2
+  exit 1
+fi
+
+set +e
+git grep --untracked -qIE '(fd_[A-Za-z0-9_-]{20,}|FIRSTDRAFT_(STAGING_)?API_TOKEN=.+|gh[opsu]_[A-Za-z0-9]{20,})' \
+  -- . ':(exclude)script/check'
+credential_status=$?
+set -e
+case "$credential_status" in
+  0)
+    echo "A credential-like value was found in the repository." >&2
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "The credential scan could not inspect the repository." >&2
+    exit 1
+    ;;
+esac
+
+echo "Drawing Board contract checks passed."

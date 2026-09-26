@@ -1,0 +1,48 @@
+name: Drawing Board checks
+
+on:
+  pull_request:
+    paths: [drawing-board/**, .github/workflows/drawing-board.yml]
+  push:
+    branches: [main]
+    paths: [drawing-board/**, .github/workflows/drawing-board.yml]
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Exact firstdraft/drawing-board commit to qualify
+        required: true
+        default: 416ed5cbf08b0248f5a43cbe2bfe84c1a730c813
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Select the exact template candidate
+        id: candidate
+        env:
+          CANDIDATE: ${{ inputs.candidate || '416ed5cbf08b0248f5a43cbe2bfe84c1a730c813' }}
+        run: |
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$CANDIDATE" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: firstdraft/drawing-board
+          ref: ${{ steps.candidate.outputs.sha }}
+          path: board-candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./drawing-board
+        with:
+          workspace: board-candidate
