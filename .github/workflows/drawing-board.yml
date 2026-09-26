@@ -11,7 +11,7 @@ on:
       candidate:
         description: Exact firstdraft/drawing-board commit to qualify
         required: true
-        default: 416ed5cbf08b0248f5a43cbe2bfe84c1a730c813
+        default: 058fb28aff15782b9ff764628f7ff77651a7e77e
 
 permissions:
   contents: read
@@ -27,7 +27,7 @@ jobs:
       - name: Select the exact template candidate
         id: candidate
         env:
-          CANDIDATE: ${{ inputs.candidate || '416ed5cbf08b0248f5a43cbe2bfe84c1a730c813' }}
+          CANDIDATE: ${{ inputs.candidate || '058fb28aff15782b9ff764628f7ff77651a7e77e' }}
         run: |
           [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$CANDIDATE" >> "$GITHUB_OUTPUT"
