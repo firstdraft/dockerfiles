@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {createRequire} from "node:module";
+import {parseEnv} from "node:util";
 
 const require = createRequire(import.meta.url);
 const repositoryRoot = path.resolve(process.env.DRAWING_BOARD_PATH ?? process.cwd());
@@ -22,6 +23,9 @@ try {
     path.join(repositoryRoot, ".devcontainer", "agent-versions.env"),
     path.join(devcontainerDirectory, "agent-versions.env"),
   );
+  const cliVersion = parseEnv(fs.readFileSync(
+    path.join(devcontainerDirectory, "agent-versions.env"), "utf8",
+  )).FIRSTDRAFT_CLI_VERSION;
   fs.writeFileSync(fakeCli, `#!/usr/bin/env node
 const fs = require("node:fs");
 const arguments_ = process.argv.slice(2);
@@ -42,7 +46,7 @@ const probe = {
 if (arguments_.length === 1 && arguments_[0] === "--version") {
   fs.writeFileSync(process.env.FIRSTDRAFT_TEST_VERSION_OUTPUT, JSON.stringify(probe));
   process.stdout.write("firstdraft " +
-    (process.env.FIRSTDRAFT_TEST_CLI_VERSION ?? "0.7.0") + "\\n");
+    (process.env.FIRSTDRAFT_TEST_CLI_VERSION ?? ${JSON.stringify(cliVersion)}) + "\\n");
   if (process.env.FIRSTDRAFT_TEST_CLI_NOTICE) {
     process.stderr.write("A benign version notice.\\n");
   }
@@ -213,7 +217,7 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
       root: testRepository,
       stdio: "ignore",
     }),
-    /standalone First Draft CLI must be exactly 0\.7\.0/,
+    {message: `the standalone First Draft CLI must be exactly ${cliVersion}.`},
   );
 } finally {
   fs.rmSync(temporaryRoot, {force: true, recursive: true});
