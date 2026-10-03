@@ -14,7 +14,7 @@ A repository created from this template must provide one ready-to-use workspace 
 
 - the Dev Container installs the latest public Claude Code and Codex releases and the exact reviewed First Draft CLI;
 - every Skill declared by one exact source revision is linked into both agents;
-- `.env` supplies the shared staging origin and token without entering Git;
+- `.env` supplies the production origin and token without entering Git;
 - bare `firstdraft` on the Codespace PATH resolves to `bin/firstdraft`, and AGENTS.md routes Skill-issued commands
   through that wrapper; and
 - the same container carries the current generated Foundation's Ruby and Node toolchain plus healthy PostgreSQL;
@@ -352,13 +352,11 @@ Never commit a First Draft API token, GitHub token, agent credential, or generat
 Board candidate for common credential shapes and verifies that `.env` remains ignored.
 
 The shared ignored `.env` is the credential path for both agents; do not add agent-specific token configuration.
-The template wrapper intentionally selects staging. Its existing `.env` format keeps the staging token under
-`FIRSTDRAFT_API_TOKEN`; the wrapper maps it to the CLI's `FIRSTDRAFT_STAGING_API_TOKEN`, removes the production token
-and legacy plugin settings from the child environment, and overrides any inherited staging token. This applies to
-the version probe as well as the requested command. A blank `.env` token never falls back to shell credentials.
-The standalone CLI defaults to production and selects staging with `--staging`; Drawing Board's wrapper continues
-to select staging through its required URL. Production defaults, GitHub Publication, and Service deployment
-are owned by [firstdraft/firstdraft](https://github.com/firstdraft/firstdraft); Skill and plugin delivery are owned by
+The template wrapper requires the production origin, `https://firstdraft.com`, which matches the pinned CLI's
+default. It passes the `.env` token to the CLI as `FIRSTDRAFT_API_TOKEN`, replacing any inherited value, and removes
+legacy plugin settings from the child environment. This applies to the version probe as well as the requested
+command. A blank `.env` token never falls back to shell credentials. GitHub Publication and Service deployment are
+owned by [firstdraft/firstdraft](https://github.com/firstdraft/firstdraft); Skill and plugin delivery are owned by
 [firstdraft/skills](https://github.com/firstdraft/skills).
 
 ## Documentation

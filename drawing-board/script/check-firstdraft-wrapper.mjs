@@ -32,9 +32,8 @@ const arguments_ = process.argv.slice(2);
 const probe = {
   apiUrl: process.env.FIRSTDRAFT_API_URL,
   arguments_,
-  stagingTokenIsExpected: process.env.FIRSTDRAFT_STAGING_API_TOKEN === "test-token",
-  stagingTokenPresent: Boolean(process.env.FIRSTDRAFT_STAGING_API_TOKEN),
-  productionTokenPresent: Object.prototype.hasOwnProperty.call(process.env, "FIRSTDRAFT_API_TOKEN"),
+  tokenIsExpected: process.env.FIRSTDRAFT_API_TOKEN === "test-token",
+  tokenPresent: Boolean(process.env.FIRSTDRAFT_API_TOKEN),
   legacyUrlPresent: Object.prototype.hasOwnProperty.call(process.env, "FIRSTDRAFT_BASE_URL"),
   pluginOptionsPresent: [
     "CLAUDE_PLUGIN_OPTION_API_TOKEN",
@@ -58,7 +57,7 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
 
   const writeEnvironment = ({
     apiToken = "",
-    apiUrl = "https://staging.firstdraft.com",
+    apiUrl = "https://firstdraft.com",
     extra = "",
     mode = 0o600,
   } = {}) => {
@@ -72,7 +71,6 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
   const testEnvironment = {
     ...process.env,
     FIRSTDRAFT_API_TOKEN: "ambient-production-token",
-    FIRSTDRAFT_STAGING_API_TOKEN: "ambient-staging-token",
     FIRSTDRAFT_API_URL: "https://wrong.example.com",
     FIRSTDRAFT_BASE_URL: "https://legacy.example.com",
     CLAUDE_PLUGIN_OPTION_API_TOKEN: "uppercase-token",
@@ -91,7 +89,7 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
   const symlinkTarget = path.join(testRepository, "environment-target");
   fs.writeFileSync(
     symlinkTarget,
-    `FIRSTDRAFT_API_URL=https://staging.firstdraft.com\n${"FIRSTDRAFT_API_TOKEN"}=\n`,
+    `FIRSTDRAFT_API_URL=https://firstdraft.com\n${"FIRSTDRAFT_API_TOKEN"}=\n`,
   );
   fs.chmodSync(symlinkTarget, 0o600);
   fs.symlinkSync(symlinkTarget, path.join(testRepository, ".env"));
@@ -105,7 +103,7 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
   writeEnvironment();
   assert.deepEqual(readConfiguration(testRepository), {
     apiToken: "",
-    apiUrl: "https://staging.firstdraft.com",
+    apiUrl: "https://firstdraft.com",
   });
   assert.equal(requiresApiToken(["plan", "push"]), true);
   assert.equal(requiresApiToken(["plan", "push", "--help"]), false);
@@ -113,10 +111,6 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
   assert.equal(requiresApiToken(["generate", "uuid"]), false);
   assert.equal(requiresApiToken(["future", "network-command"]), true);
   assert.equal(requiresApiToken(["--version"]), false);
-  assert.equal(requiresApiToken(["--staging", "--version"]), false);
-  assert.equal(requiresApiToken(["--staging", "plan", "init", "--name", "Test"]), false);
-  assert.equal(requiresApiToken(["--staging", "generate", "uuid"]), false);
-  assert.equal(requiresApiToken(["--staging", "plan", "push"]), true);
   await assert.rejects(
     run({
       arguments_: ["plan", "push"],
@@ -139,27 +133,25 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
   });
   assert.deepEqual(result, {signal: null, status: 0});
   assert.deepEqual(JSON.parse(fs.readFileSync(probeOutput, "utf8")), {
-    apiUrl: "https://staging.firstdraft.com",
+    apiUrl: "https://firstdraft.com",
     arguments_: ["plan", "push"],
     legacyUrlPresent: false,
     pluginOptionsPresent: false,
-    productionTokenPresent: false,
-    stagingTokenIsExpected: true,
-    stagingTokenPresent: true,
+    tokenIsExpected: true,
+    tokenPresent: true,
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(versionProbeOutput, "utf8")), {
-    apiUrl: "https://staging.firstdraft.com",
+    apiUrl: "https://firstdraft.com",
     arguments_: ["--version"],
     legacyUrlPresent: false,
     pluginOptionsPresent: false,
-    productionTokenPresent: false,
-    stagingTokenIsExpected: true,
-    stagingTokenPresent: true,
+    tokenIsExpected: true,
+    tokenPresent: true,
   });
 
   writeEnvironment();
   const localResult = await run({
-    arguments_: ["--staging", "plan", "init", "--name", "Test"],
+    arguments_: ["plan", "init", "--name", "Test"],
     downstreamCli: fakeCli,
     environment: testEnvironment,
     root: testRepository,
@@ -167,22 +159,20 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
   });
   assert.deepEqual(localResult, {signal: null, status: 0});
   assert.deepEqual(JSON.parse(fs.readFileSync(probeOutput, "utf8")), {
-    apiUrl: "https://staging.firstdraft.com",
-    arguments_: ["--staging", "plan", "init", "--name", "Test"],
+    apiUrl: "https://firstdraft.com",
+    arguments_: ["plan", "init", "--name", "Test"],
     legacyUrlPresent: false,
     pluginOptionsPresent: false,
-    productionTokenPresent: false,
-    stagingTokenIsExpected: false,
-    stagingTokenPresent: false,
+    tokenIsExpected: false,
+    tokenPresent: false,
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(versionProbeOutput, "utf8")), {
-    apiUrl: "https://staging.firstdraft.com",
+    apiUrl: "https://firstdraft.com",
     arguments_: ["--version"],
     legacyUrlPresent: false,
     pluginOptionsPresent: false,
-    productionTokenPresent: false,
-    stagingTokenIsExpected: false,
-    stagingTokenPresent: false,
+    tokenIsExpected: false,
+    tokenPresent: false,
   });
 
   const injectionMarker = path.join(temporaryRoot, "injected");
@@ -196,7 +186,7 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
   writeEnvironment({apiToken: "test-token", mode: 0o644});
   assert.throws(() => readConfiguration(testRepository), /mode 0600/);
 
-  writeEnvironment({apiToken: "test-token", apiUrl: "https://firstdraft.com"});
+  writeEnvironment({apiToken: "test-token", apiUrl: "https://staging.firstdraft.com"});
   await assert.rejects(
     run({
       arguments_: ["plan", "compile"],
@@ -205,7 +195,7 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
       root: testRepository,
       stdio: "ignore",
     }),
-    /FIRSTDRAFT_API_URL in .env must be https:\/\/staging\.firstdraft\.com/,
+    /FIRSTDRAFT_API_URL in .env must be https:\/\/firstdraft\.com\./,
   );
 
   writeEnvironment({apiToken: "test-token"});
