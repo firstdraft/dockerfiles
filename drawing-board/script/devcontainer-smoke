@@ -66,12 +66,12 @@ test -f .env
 test -O .env
 test "$(stat -c '%a' .env)" = "600"
 
-FIRSTDRAFT_STAGING_API_URL="$FIRSTDRAFT_STAGING_API_URL" node -e '
+FIRSTDRAFT_CLI_DEFAULT_API_URL="$FIRSTDRAFT_CLI_DEFAULT_API_URL" node -e '
   const {parseEnv} = require("node:util");
   const parsed = parseEnv(require("node:fs").readFileSync(".env", "utf8"));
   const valid = Object.keys(parsed).sort().join(",") ===
       "FIRSTDRAFT_API_TOKEN,FIRSTDRAFT_API_URL" &&
-    parsed.FIRSTDRAFT_API_URL === process.env.FIRSTDRAFT_STAGING_API_URL &&
+    parsed.FIRSTDRAFT_API_URL === process.env.FIRSTDRAFT_CLI_DEFAULT_API_URL &&
     parsed.FIRSTDRAFT_API_TOKEN === "";
   process.exit(valid ? 0 : 1);
 '

@@ -148,7 +148,7 @@ writeFileSync(path.join(prefix, "bin/firstdraft"), "#!/usr/bin/env node\\nconsol
     [path.join(environment.CODEX_HOME, "sessions/session.jsonl"), '{"fixture":"existing Codex conversation"}\n'],
     [path.join(environment.CLAUDE_CONFIG_DIR, "skills/user-skill/SKILL.md"), "Claude user Skill\n"],
     [path.join(home, ".agents/skills/user-skill/SKILL.md"), "Codex user Skill\n"],
-    [path.join(workspace, ".env"), `FIRSTDRAFT_API_URL=https://staging.firstdraft.com\n${"FIRSTDRAFT_API_TOKEN"}=fixture-placeholder\n`],
+    [path.join(workspace, ".env"), `FIRSTDRAFT_API_URL=https://firstdraft.com\n${"FIRSTDRAFT_API_TOKEN"}=fixture-placeholder\n`],
   ]);
   for (const [file, content] of preserved) write(file, content);
   const verifyPreserved = () => {

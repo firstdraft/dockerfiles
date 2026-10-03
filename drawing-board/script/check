@@ -95,8 +95,8 @@ if [[ "$actual_bin_entries" != "$expected_bin_entries" ]]; then
   exit 1
 fi
 
-if [[ "$(cat .env.example)" != $'FIRSTDRAFT_API_URL=https://staging.firstdraft.com\nFIRSTDRAFT_API_TOKEN=' ]]; then
-  echo ".env.example must select staging and leave its token blank." >&2
+if [[ "$(cat .env.example)" != $'FIRSTDRAFT_API_URL=https://firstdraft.com\nFIRSTDRAFT_API_TOKEN=' ]]; then
+  echo ".env.example must select production and leave its token blank." >&2
   exit 1
 fi
 if ! git check-ignore --quiet .env || git ls-files --error-unmatch .env >/dev/null 2>&1; then
@@ -170,9 +170,8 @@ fi
 
 "$checks/check-depth-one"
 
-if [[ "$FIRSTDRAFT_CLI_DEFAULT_API_URL" != "https://firstdraft.com" || \
-  "$FIRSTDRAFT_STAGING_API_URL" != "https://staging.firstdraft.com" ]]; then
-  echo "The pinned releases no longer match the documented staging-wrapper contract." >&2
+if [[ "$FIRSTDRAFT_CLI_DEFAULT_API_URL" != "https://firstdraft.com" ]]; then
+  echo "The pinned releases no longer match the documented production-wrapper contract." >&2
   exit 1
 fi
 
