@@ -114,6 +114,16 @@ exec sleep 30
   assert.match(helper("login.sh", ["stop", "render"]).output, /^STOPPED: /);
   assert.match(helper("login.sh", ["status", "render"]).output, /^ENDED: /);
 
+  // login.sh wait lets an approved device sign-in finish saving before it checks.
+  write(path.join(stubs, "revyl"), `#!/bin/sh
+case "$1 $2" in
+  "auth login") echo "Approve at https://app.revyl.ai/cli/device?code=WXYZ-2345"; sleep 2; touch "${path.join(temporary, "revyl-saved")}" ;;
+  "auth status") [ -f "${path.join(temporary, "revyl-saved")}" ] && echo "Authenticated" || echo "Not authenticated" ;;
+esac
+`, 0o755);
+  assert.match(helper("login.sh", ["start", "revyl"]).output, /^URL: https:\/\/app\.revyl\.ai\/cli\/device\?code=WXYZ-2345$/m);
+  assert.equal(helper("login.sh", ["wait", "revyl"]).output, "[PASS] revyl: signed in\n");
+
   // open.sh uses VS Code's $BROWSER helper and reports when there is none.
   write(path.join(stubs, "fake-browser"), `#!/bin/sh\nprintf '%s' "$1" > "${path.join(temporary, "opened")}"\n`, 0o755);
   assert.match(helper("open.sh", ["https://example.com/a"], { BROWSER: path.join(stubs, "fake-browser") }).output, /^OPENED: /);
