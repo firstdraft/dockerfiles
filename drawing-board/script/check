@@ -72,7 +72,7 @@ node "$checks/check-image-receipt.mjs"
 # shellcheck disable=SC1091
 source .devcontainer/agent-versions.env
 
-for script in .devcontainer/setup-agents bin/agent-doctor bin/review-plan-with-claude bin/review-plan-with-codex script/initialize-application script/refresh-codespaces-private-port; do
+for script in .devcontainer/setup-agents .devcontainer/workshop/*.sh bin/agent-doctor bin/review-plan-with-claude bin/review-plan-with-codex script/initialize-application script/refresh-codespaces-private-port; do
   bash -n "$script"
   test -x "$script"
 done
@@ -84,7 +84,7 @@ for javascript in .devcontainer/*.mjs bin/firstdraft script/*.mjs "$checks"/*.mj
   node --check "$javascript"
 done
 test -x bin/firstdraft
-for check in check-firstdraft-wrapper check-agent-skills check-agent-setup check-initialize-application; do
+for check in check-firstdraft-wrapper check-agent-skills check-agent-setup check-workshop-helpers check-initialize-application; do
   node "$checks/$check.mjs"
 done
 
@@ -95,12 +95,12 @@ if [[ "$actual_bin_entries" != "$expected_bin_entries" ]]; then
   exit 1
 fi
 
-if [[ "$(cat .env.example)" != $'FIRSTDRAFT_API_URL=https://firstdraft.com\nFIRSTDRAFT_API_TOKEN=' ]]; then
-  echo ".env.example must select production and leave its token blank." >&2
+if [[ -e .env.example ]]; then
+  echo "First Draft sign-in is the CLI's saved login; do not restore the .env token template." >&2
   exit 1
 fi
 if ! git check-ignore --quiet .env || git ls-files --error-unmatch .env >/dev/null 2>&1; then
-  echo ".env must be ignored and untracked." >&2
+  echo ".env must stay ignored and untracked." >&2
   exit 1
 fi
 
@@ -205,6 +205,19 @@ if [[ ! "$FIRSTDRAFT_CLI_VERSION" =~ ^0\.[0-9]+\.[0-9]+$ ]]; then
   echo "The First Draft CLI version must use ordinary pre-1.0 SemVer." >&2
   exit 1
 fi
+
+for version in "$RENDER_CLI_VERSION" "$NEONCTL_VERSION" "$REVYL_CLI_VERSION"; do
+  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "The Render, Neon and Revyl CLIs must each be pinned to one exact version." >&2
+    exit 1
+  fi
+done
+for digest in "$RENDER_CLI_SHA256_AMD64" "$RENDER_CLI_SHA256_ARM64" "$REVYL_CLI_SHA256_AMD64" "$REVYL_CLI_SHA256_ARM64"; do
+  if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "The Render and Revyl downloads must each be pinned to one SHA-256 digest." >&2
+    exit 1
+  fi
+done
 
 set +e
 git grep --untracked -qIE '(fd_[A-Za-z0-9_-]{20,}|FIRSTDRAFT_(STAGING_)?API_TOKEN=.+|gh[opsu]_[A-Za-z0-9]{20,})' \
