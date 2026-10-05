@@ -12,9 +12,12 @@ disposable Drawing Board checkout. Keep credentials and user work out of that ch
 
 A repository created from this template must provide one ready-to-use workspace for Claude or Codex:
 
-- the Dev Container installs the latest public Claude Code and Codex releases and the exact reviewed First Draft CLI;
+- the Dev Container installs the latest public Claude Code and Codex releases, the exact reviewed First Draft CLI,
+  and the exact Render, Neon and Revyl CLIs that the workshop's command-line deploy and phone preview use;
 - every Skill declared by one exact source revision is linked into both agents;
-- `.env` supplies the production origin and token without entering Git;
+- First Draft sign-in is the CLI's own saved login from `firstdraft login --device`, kept outside the workspace;
+- the laptop kit's sign-in helpers, `workshop-signin` Skill and app-session notes are installed in their Codespaces
+  form, the notes in the user-level `CLAUDE.md` and Codex `AGENTS.md` so they survive root Compile;
 - bare `firstdraft` on the Codespace PATH resolves to `bin/firstdraft`, and AGENTS.md routes Skill-issued commands
   through that wrapper; and
 - the same container carries the current generated Foundation's Ruby and Node toolchain plus healthy PostgreSQL;
@@ -30,7 +33,7 @@ The template itself does not contain generated application source. For the inter
 `AGENTS.md` selects explicit `--output .` approval: the application replaces the workspace layout, original material
 moves under `.firstdraft/design/`, and the same Git repository holds both. The primary **Use this template → Open in a
 codespace** route starts without a remote. Inspect and commit the staged baseline, then publish it from VS Code or
-the [Codespaces publication API](https://github.com/firstdraft/drawing-board/blob/main/README.md#publish-from-the-codespace-terminal) to the user's own private repository before
+the [Codespaces publication API](https://github.com/firstdraft/drawing-board/blob/main/AGENTS.md#save-the-app-to-github) to the user's own private repository before
 setup or edits. Preserve and use an existing remote when the user chooses
 repository-first creation. Do not run the nested initializer or application smoke after root adoption, including their
 relocated copies. The optional `--output ./application` mode keeps an ignored, separate nested application. Its initializer remains
@@ -44,13 +47,14 @@ The accepted cross-repository sequence and its safety boundaries live in
 | Location | Responsibility |
 |---|---|
 | Drawing Board `.devcontainer/` | Runtime Compose, lifecycle configuration, agent setup and selected tool pins |
+| Drawing Board `.devcontainer/workshop/` | Codespaces copies of the laptop kit's sign-in helpers, Skill and app-session notes |
 | Drawing Board `bin/` | CLI wrapper, installation diagnostics and optional Plan review |
 | Drawing Board `script/initialize-application` and inventory modules | Nested application's initial Git checkpoint |
 | Drawing Board `script/refresh-codespaces-private-port` | Existing Codespaces attachment behavior |
 | `image/` | Dockerfile, locked build Features and the historical published-image receipt |
 | `action.yml` | Source checks and two installation smokes in the exact caller checkout's Dev Container |
 | `image/action.yml`, `image/verify/action.yml` | Authorized image build, then AMD64 runtime / ARM64 metadata verification in a dependent job |
-| `script/check*` | Source, credential, installation, preservation, discovery and Git-initialization checks |
+| `script/check*` | Source, credential, installation, preservation, discovery, workshop-helper and Git-initialization checks |
 | `script/agent-smoke`, `script/devcontainer-smoke` | Installed-agent and workspace runtime checks |
 | `script/application-smoke`, `script/selenium` | Optional nested-app qualification; not the root materialization path |
 | `docs/` | Relocation inventory and retained investigation/qualification evidence |
@@ -185,7 +189,7 @@ anonymous access and the retained comparison Codespace as passed. That exact Cod
 needed. The helper remains in use by `script/application-smoke` for the optional nested application and by
 `script/devcontainer-smoke` to verify that workspace setup has not started Selenium. Root-adopted applications use
 their generated `.devcontainer/compose.yaml` and the running container's Compose project, as shown in the
-[browser-testing instructions](https://github.com/firstdraft/drawing-board/blob/main/README.md#7-open-your-app). The generated health check uses Selenium's supplied
+[browser-testing instructions](https://github.com/firstdraft/drawing-board/blob/main/AGENTS.md#continue-after-compile). The generated health check uses Selenium's supplied
 `/opt/bin/check-grid.sh`; Compose owns readiness for that command and fresh generated Dev Container startup.
 
 Selenium uses its upstream session-request queue deadline, currently 300 seconds. The generated app's Ruby client
@@ -259,7 +263,8 @@ future generated target revision.
 Drawing Board is a post-publication follow-up in the
 [coordinated release process](https://github.com/firstdraft/firstdraft/blob/main/RELEASE_COORDINATION.md#drawing-board-release-handoff).
 After the service and packages are released, update `FIRSTDRAFT_CLI_VERSION` and `FIRSTDRAFT_SKILLS_REVISION` in
-`.devcontainer/agent-versions.env` to the published compatible CLI and the released plugin's exact source revision.
+`.devcontainer/agent-versions.env` to the published compatible CLI and the released plugin's exact source revision
+(the commit of its `claude-v*` tag).
 Reconcile the wrapper, setup messages, guide, root-adoption paths, and affected fixtures. Run `script/check "$DRAWING_BOARD_PATH"`, require
 the pull request's built-container CI, and verify the merged revision's prebuild before declaring the template ready.
 Record the selected pins and observed checks; installation and discovery do not prove authenticated Compilation.
@@ -269,8 +274,9 @@ the Codespaces fallback.
 
 Review tools weekly as well as during releases. Fresh setup already selects the vendors' latest public Claude and
 Codex releases; verify those installers still work with the template. Review the pinned First Draft CLI/Skills,
-Ruby, Node, PostgreSQL, Dev Container Features, GitHub CLI, and Selenium/image dependencies against their official
-releases. Prepare small compatible updates and run the checks for the affected surface. A runtime pin must continue
+Render, Neon and Revyl CLIs, Ruby, Node, PostgreSQL, Dev Container Features, GitHub CLI, and Selenium/image
+dependencies against their official releases. Render and Revyl pins carry each Linux asset's published SHA-256;
+Revyl stays on the laptop kit's version unless the kit moves. Prepare small compatible updates and run the checks for the affected surface. A runtime pin must continue
 to match generated Foundations; record a concrete compatibility reason when retaining an older version.
 
 Use the existing vendor updaters for running workspaces, as described above. Do not reinstall tools on every attach,
@@ -342,36 +348,48 @@ the [startup investigation](docs/STARTUP_INVESTIGATION.md) for measurements and 
 
 ## Publish from the Codespace terminal
 
-The student-facing [terminal publication instructions](https://github.com/firstdraft/drawing-board/blob/main/README.md#publish-from-the-codespace-terminal)
+The agent-facing [terminal publication instructions](https://github.com/firstdraft/drawing-board/blob/main/AGENTS.md#save-the-app-to-github)
 remain with the template. The [historical credential receipt](docs/STARTUP_INVESTIGATION.md#publication-credentials)
 records the existing built-in-token behavior; relocation adds no publication permission or provider observation.
 
 ## Credentials and external systems
 
-Never commit a First Draft API token, GitHub token, agent credential, or generated `.env`. `script/check` scans the
-Board candidate for common credential shapes and verifies that `.env` remains ignored.
+Never commit a First Draft API token, GitHub token, agent credential, provider key, or `.env`. `script/check` scans
+the Board candidate for common credential shapes and verifies that `.env` remains ignored.
 
-The shared ignored `.env` is the credential path for both agents; do not add agent-specific token configuration.
-The template wrapper requires the production origin, `https://firstdraft.com`, which matches the pinned CLI's
-default. It passes the `.env` token to the CLI as `FIRSTDRAFT_API_TOKEN`, replacing any inherited value, and removes
-legacy plugin settings from the child environment. This applies to the version probe as well as the requested
-command. A blank `.env` token never falls back to shell credentials. GitHub Publication and Service deployment are
+First Draft sign-in is the pinned CLI's saved login: `firstdraft login --device` (run by the `workshop-signin` Skill
+through `~/.workshop/login.sh`) stores a token per origin in `~/.config/firstdraft/credentials.json`, mode 0600, for
+both agents. The template wrapper selects the production origin, `https://firstdraft.com`, which matches the pinned
+CLI's default, and removes any inherited `FIRSTDRAFT_API_TOKEN` or `FIRSTDRAFT_STAGING_API_TOKEN`, because the CLI
+prefers an environment token to its saved login. This applies to the version probe as well as the requested
+command. `bin/agent-doctor` reports whether a production login is saved without reading the token out.
+
+Render, Neon and Revyl logins live in each CLI's own home-directory store. Render and Revyl use device approval,
+which works from a browser Codespace. Neon's browser sign-in returns to a 127.0.0.1 listener inside the container
+for 60 seconds, which VS Code Desktop forwards and VS Code for the Web cannot; its fallback stores a personal API key
+with `neonctl profile create DEFAULT --api-key -` from a private form. The Cloudinary key goes from a private form
+to `~/.workshop/cloudinary.env`. Home-directory sign-ins survive Codespace stop and start but not a rebuild, after
+which `/workshop-signin` redoes only what is missing. GitHub Publication and Service deployment are
 owned by [firstdraft/firstdraft](https://github.com/firstdraft/firstdraft); Skill and plugin delivery are owned by
 [firstdraft/skills](https://github.com/firstdraft/skills).
 
 ## Documentation
 
-Keep [README.md](https://github.com/firstdraft/drawing-board/blob/main/README.md) focused on the beginner journey. Put maintainer commands and implementation details here,
-and keep student agent guardrails in Drawing Board `AGENTS.md`. If a workflow change affects what a tester must do, update
-the README and verify the affected journey before landing it: root adoption for the internal-alpha path, nested
-`application/` when selected, or the separate-repository journey for Publication.
+Keep [README.md](https://github.com/firstdraft/drawing-board/blob/main/README.md) focused on the beginner journey: it
+mirrors the [laptop kit](https://github.com/firstdraft/fd-workshop-setup)'s parts, prompts and troubleshooting, and
+differs only where a Codespace does (a forwarded port instead of a tunnel, GitHub already signed in, no WSL setup,
+Neon's sign-in route, and one app per Codespace). Put maintainer commands and implementation details here, keep
+student agent guardrails in Drawing Board `AGENTS.md`, and keep app-session notes in
+`.devcontainer/workshop/app-instructions.md` in step with the kit's. If a workflow change affects what a tester must
+do, update the README and verify the affected journey before landing it: root adoption for the workshop path, or
+nested `application/` when selected.
 [DIRECT_COMPILATION_PLAN.md](docs/DIRECT_COMPILATION_PLAN.md) owns the
 current direct-journey acceptance steps and every explicitly unfinished step; do not call that journey complete
 until those steps are observed.
 
-The internal-alpha delivery scope is the editor-first loop in the README: Codespace, installed Skill, existing
-agent, approved root Compile, private-repository publication, boot, source inspection, ordinary source iteration, and saving to the same repository.
-Deployment is optional follow-on work, not a pre-send gate for that code-sharing test. A separate Plan web editor,
+The workshop scope is the README's loop: Codespace, sign-in, installed Skill, approved root Compile, boot,
+private-repository publication, command-line deploy to Render and Neon, Revyl phone previews, and ordinary source
+iteration saved to the same repository. A separate Plan web editor,
 public plugin promotion, and completion of all realization gaps are not prerequisites. The existing web surface
 supplies access and credentials; an explorable read-only Plan view can improve independently.
 

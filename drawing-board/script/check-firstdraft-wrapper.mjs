@@ -7,7 +7,7 @@ import {parseEnv} from "node:util";
 
 const require = createRequire(import.meta.url);
 const repositoryRoot = path.resolve(process.env.DRAWING_BOARD_PATH ?? process.cwd());
-const {readConfiguration, requiresApiToken, run} = require(
+const {childEnvironment, credentialsPath, hasSavedLogin, run} = require(
   path.join(repositoryRoot, "bin", "firstdraft"),
 );
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "drawing-board-wrapper-"));
@@ -23,182 +23,79 @@ try {
     path.join(repositoryRoot, ".devcontainer", "agent-versions.env"),
     path.join(devcontainerDirectory, "agent-versions.env"),
   );
-  const cliVersion = parseEnv(fs.readFileSync(
-    path.join(devcontainerDirectory, "agent-versions.env"), "utf8",
-  )).FIRSTDRAFT_CLI_VERSION;
+  const pins = parseEnv(fs.readFileSync(path.join(devcontainerDirectory, "agent-versions.env"), "utf8"));
+  const cliVersion = pins.FIRSTDRAFT_CLI_VERSION;
+  const production = pins.FIRSTDRAFT_CLI_DEFAULT_API_URL;
+  assert.equal(production, "https://firstdraft.com");
+  assert.equal(fs.existsSync(path.join(repositoryRoot, ".env.example")), false,
+    "First Draft sign-in is the CLI's saved login; no .env token path remains");
+
   fs.writeFileSync(fakeCli, `#!/usr/bin/env node
 const fs = require("node:fs");
 const arguments_ = process.argv.slice(2);
 const probe = {
   apiUrl: process.env.FIRSTDRAFT_API_URL,
   arguments_,
-  tokenIsExpected: process.env.FIRSTDRAFT_API_TOKEN === "test-token",
-  tokenPresent: Boolean(process.env.FIRSTDRAFT_API_TOKEN),
-  legacyUrlPresent: Object.prototype.hasOwnProperty.call(process.env, "FIRSTDRAFT_BASE_URL"),
-  pluginOptionsPresent: [
-    "CLAUDE_PLUGIN_OPTION_API_TOKEN",
-    "CLAUDE_PLUGIN_OPTION_API_URL",
-    "CLAUDE_PLUGIN_OPTION_api_token",
-    "CLAUDE_PLUGIN_OPTION_api_url",
-  ].some((key) => Object.prototype.hasOwnProperty.call(process.env, key)),
+  tokenPresent: Object.prototype.hasOwnProperty.call(process.env, "FIRSTDRAFT_API_TOKEN"),
+  stagingTokenPresent: Object.prototype.hasOwnProperty.call(process.env, "FIRSTDRAFT_STAGING_API_TOKEN"),
+  home: process.env.HOME,
 };
 if (arguments_.length === 1 && arguments_[0] === "--version") {
   fs.writeFileSync(process.env.FIRSTDRAFT_TEST_VERSION_OUTPUT, JSON.stringify(probe));
-  process.stdout.write("firstdraft " +
-    (process.env.FIRSTDRAFT_TEST_CLI_VERSION ?? ${JSON.stringify(cliVersion)}) + "\\n");
-  if (process.env.FIRSTDRAFT_TEST_CLI_NOTICE) {
-    process.stderr.write("A benign version notice.\\n");
-  }
+  process.stdout.write((process.env.FIRSTDRAFT_TEST_CLI_VERSION ?? ${JSON.stringify(cliVersion)}) + "\\n");
   process.exit(0);
 }
 fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
+process.exit(Number(process.env.FIRSTDRAFT_TEST_EXIT ?? 0));
 `);
   fs.chmodSync(fakeCli, 0o755);
 
-  const writeEnvironment = ({
-    apiToken = "",
-    apiUrl = "https://firstdraft.com",
-    extra = "",
-    mode = 0o600,
-  } = {}) => {
-    const environmentPath = path.join(testRepository, ".env");
-    fs.writeFileSync(
-      environmentPath,
-      `FIRSTDRAFT_API_URL=${apiUrl}\n${"FIRSTDRAFT_API_TOKEN"}=${apiToken}\n${extra}`,
-    );
-    fs.chmodSync(environmentPath, mode);
-  };
+  const home = path.join(temporaryRoot, "home");
   const testEnvironment = {
     ...process.env,
+    HOME: home,
     FIRSTDRAFT_API_TOKEN: "ambient-production-token",
+    FIRSTDRAFT_STAGING_API_TOKEN: "ambient-staging-token",
     FIRSTDRAFT_API_URL: "https://wrong.example.com",
-    FIRSTDRAFT_BASE_URL: "https://legacy.example.com",
-    CLAUDE_PLUGIN_OPTION_API_TOKEN: "uppercase-token",
-    CLAUDE_PLUGIN_OPTION_API_URL: "https://uppercase.example.com",
-    CLAUDE_PLUGIN_OPTION_api_token: "lowercase-token",
-    CLAUDE_PLUGIN_OPTION_api_url: "https://lowercase.example.com",
     FIRSTDRAFT_TEST_OUTPUT: probeOutput,
     FIRSTDRAFT_TEST_VERSION_OUTPUT: versionProbeOutput,
   };
-
-  assert.throws(
-    () => readConfiguration(testRepository),
-    /.env is missing/,
-  );
-
-  const symlinkTarget = path.join(testRepository, "environment-target");
-  fs.writeFileSync(
-    symlinkTarget,
-    `FIRSTDRAFT_API_URL=https://firstdraft.com\n${"FIRSTDRAFT_API_TOKEN"}=\n`,
-  );
-  fs.chmodSync(symlinkTarget, 0o600);
-  fs.symlinkSync(symlinkTarget, path.join(testRepository, ".env"));
-  assert.throws(
-    () => readConfiguration(testRepository),
-    /must be a regular file, not a link/,
-  );
-  fs.unlinkSync(path.join(testRepository, ".env"));
-  fs.unlinkSync(symlinkTarget);
-
-  writeEnvironment();
-  assert.deepEqual(readConfiguration(testRepository), {
-    apiToken: "",
-    apiUrl: "https://firstdraft.com",
+  const expectedProbe = (arguments_) => ({
+    apiUrl: production,
+    arguments_,
+    tokenPresent: false,
+    stagingTokenPresent: false,
+    home,
   });
-  assert.equal(requiresApiToken(["plan", "push"]), true);
-  assert.equal(requiresApiToken(["plan", "push", "--help"]), false);
-  assert.equal(requiresApiToken(["plan", "init", "--name", "Test"]), false);
-  assert.equal(requiresApiToken(["generate", "uuid"]), false);
-  assert.equal(requiresApiToken(["future", "network-command"]), true);
-  assert.equal(requiresApiToken(["--version"]), false);
-  await assert.rejects(
-    run({
-      arguments_: ["plan", "push"],
+
+  assert.deepEqual(childEnvironment({FIRSTDRAFT_API_TOKEN: "x", OTHER: "kept"}, production), {
+    FIRSTDRAFT_API_URL: production,
+    OTHER: "kept",
+  });
+
+  // Every command reaches the CLI, which owns authentication through its saved login.
+  for (const arguments_ of [["login", "--device"], ["plan", "push"], ["plan", "init", "--name", "Test"]]) {
+    const result = await run({
+      arguments_,
       downstreamCli: fakeCli,
       environment: testEnvironment,
       root: testRepository,
       stdio: "ignore",
-    }),
-    /FIRSTDRAFT_API_TOKEN is blank/,
-  );
-  assert.equal(fs.existsSync(probeOutput), false);
+    });
+    assert.deepEqual(result, {signal: null, status: 0});
+    assert.deepEqual(JSON.parse(fs.readFileSync(probeOutput, "utf8")), expectedProbe(arguments_));
+    assert.deepEqual(JSON.parse(fs.readFileSync(versionProbeOutput, "utf8")), expectedProbe(["--version"]));
+  }
 
-  writeEnvironment({apiToken: "test-token"});
-  const result = await run({
-    arguments_: ["plan", "push"],
+  const failed = await run({
+    arguments_: ["plan", "compile"],
     downstreamCli: fakeCli,
-    environment: {...testEnvironment, FIRSTDRAFT_TEST_CLI_NOTICE: "1"},
+    environment: {...testEnvironment, FIRSTDRAFT_TEST_EXIT: "1"},
     root: testRepository,
     stdio: "ignore",
   });
-  assert.deepEqual(result, {signal: null, status: 0});
-  assert.deepEqual(JSON.parse(fs.readFileSync(probeOutput, "utf8")), {
-    apiUrl: "https://firstdraft.com",
-    arguments_: ["plan", "push"],
-    legacyUrlPresent: false,
-    pluginOptionsPresent: false,
-    tokenIsExpected: true,
-    tokenPresent: true,
-  });
-  assert.deepEqual(JSON.parse(fs.readFileSync(versionProbeOutput, "utf8")), {
-    apiUrl: "https://firstdraft.com",
-    arguments_: ["--version"],
-    legacyUrlPresent: false,
-    pluginOptionsPresent: false,
-    tokenIsExpected: true,
-    tokenPresent: true,
-  });
+  assert.deepEqual(failed, {signal: null, status: 1}, "The wrapper must return the CLI's own exit status");
 
-  writeEnvironment();
-  const localResult = await run({
-    arguments_: ["plan", "init", "--name", "Test"],
-    downstreamCli: fakeCli,
-    environment: testEnvironment,
-    root: testRepository,
-    stdio: "ignore",
-  });
-  assert.deepEqual(localResult, {signal: null, status: 0});
-  assert.deepEqual(JSON.parse(fs.readFileSync(probeOutput, "utf8")), {
-    apiUrl: "https://firstdraft.com",
-    arguments_: ["plan", "init", "--name", "Test"],
-    legacyUrlPresent: false,
-    pluginOptionsPresent: false,
-    tokenIsExpected: false,
-    tokenPresent: false,
-  });
-  assert.deepEqual(JSON.parse(fs.readFileSync(versionProbeOutput, "utf8")), {
-    apiUrl: "https://firstdraft.com",
-    arguments_: ["--version"],
-    legacyUrlPresent: false,
-    pluginOptionsPresent: false,
-    tokenIsExpected: false,
-    tokenPresent: false,
-  });
-
-  const injectionMarker = path.join(temporaryRoot, "injected");
-  writeEnvironment({extra: `UNEXPECTED=$(touch ${injectionMarker})\n`});
-  assert.throws(
-    () => readConfiguration(testRepository),
-    /must contain only FIRSTDRAFT_API_URL and FIRSTDRAFT_API_TOKEN/,
-  );
-  assert.equal(fs.existsSync(injectionMarker), false);
-
-  writeEnvironment({apiToken: "test-token", mode: 0o644});
-  assert.throws(() => readConfiguration(testRepository), /mode 0600/);
-
-  writeEnvironment({apiToken: "test-token", apiUrl: "https://staging.firstdraft.com"});
-  await assert.rejects(
-    run({
-      arguments_: ["plan", "compile"],
-      downstreamCli: fakeCli,
-      environment: testEnvironment,
-      root: testRepository,
-      stdio: "ignore",
-    }),
-    /FIRSTDRAFT_API_URL in .env must be https:\/\/firstdraft\.com\./,
-  );
-
-  writeEnvironment({apiToken: "test-token"});
   await assert.rejects(
     run({
       arguments_: ["--version"],
@@ -209,6 +106,37 @@ fs.writeFileSync(process.env.FIRSTDRAFT_TEST_OUTPUT, JSON.stringify(probe));
     }),
     {message: `the standalone First Draft CLI must be exactly ${cliVersion}.`},
   );
+  await assert.rejects(
+    run({
+      arguments_: ["--version"],
+      downstreamCli: path.join(temporaryRoot, "missing"),
+      environment: testEnvironment,
+      root: testRepository,
+      stdio: "ignore",
+    }),
+    /pinned standalone First Draft CLI is missing/,
+  );
+
+  // The saved-login check mirrors the CLI's credentials path and never returns the token.
+  assert.equal(credentialsPath({HOME: home}), path.join(home, ".config", "firstdraft", "credentials.json"));
+  assert.equal(credentialsPath({HOME: home, XDG_CONFIG_HOME: "relative"}),
+    path.join(home, ".config", "firstdraft", "credentials.json"));
+  const xdg = path.join(temporaryRoot, "xdg");
+  assert.equal(credentialsPath({HOME: home, XDG_CONFIG_HOME: xdg}), path.join(xdg, "firstdraft", "credentials.json"));
+  assert.equal(hasSavedLogin(production, {HOME: home}), false);
+  const writeCredentials = (origins) => {
+    const file = credentialsPath({HOME: home});
+    fs.mkdirSync(path.dirname(file), {recursive: true, mode: 0o700});
+    fs.writeFileSync(file, JSON.stringify({format: "firstdraft.cli-credentials/1", origins}), {mode: 0o600});
+  };
+  writeCredentials({"https://staging.firstdraft.com": {access_token: "staging", token_type: "Bearer"}});
+  assert.equal(hasSavedLogin(production, {HOME: home}), false);
+  writeCredentials({[production]: {access_token: " ", token_type: "Bearer"}});
+  assert.equal(hasSavedLogin(production, {HOME: home}), false);
+  writeCredentials({[production]: {access_token: "fixture-login", token_type: "Bearer"}});
+  assert.equal(hasSavedLogin(production, {HOME: home}), true);
+  fs.writeFileSync(credentialsPath({HOME: home}), "{not json");
+  assert.throws(() => hasSavedLogin(production, {HOME: home}), SyntaxError);
 } finally {
   fs.rmSync(temporaryRoot, {force: true, recursive: true});
 }

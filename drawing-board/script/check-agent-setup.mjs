@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  cpSync,
   copyFileSync,
+  existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,6 +13,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,7 +22,7 @@ import path from "node:path";
 const repository = path.resolve(process.env.DRAWING_BOARD_PATH ?? process.cwd());
 const configuration = JSON.parse(readFileSync(path.join(repository, ".devcontainer/devcontainer.json"), "utf8"));
 const versions = readFileSync(path.join(repository, ".devcontainer/agent-versions.env"), "utf8");
-const pins = Object.fromEntries([...versions.matchAll(/^([A-Z_]+)=(.+)$/gm)].map((match) => match.slice(1)));
+const pins = Object.fromEntries([...versions.matchAll(/^([A-Z0-9_]+)=(.+)$/gm)].map((match) => match.slice(1)));
 assert(!("CLAUDE_CODE_VERSION" in pins), "Claude uses the no-argument native bootstrap's latest default; a temporary regression pin or frozen experiment must update this check and its qualification receipt");
 assert.equal(pins.CODEX_VERSION, "latest", "CODEX_VERSION: normal policy is latest; a temporary regression pin or frozen experiment must update this check and its qualification receipt");
 const temporary = realpathSync(mkdtempSync(path.join(tmpdir(), "drawing-board-agent-setup-")));
@@ -65,17 +70,51 @@ try {
   symlinkSync(process.execPath, path.join(stubs, "node"));
   write(path.join(stubs, "id"), '#!/bin/sh\n[ "$1" = "-u" ] || exit 1\nprintf "1000\\n"\n', 0o755);
   write(path.join(stubs, "sudo"), '#!/bin/sh\necho "Host integration is outside this fixture" >&2\nexit 1\n', 0o755);
+  const renderAsset = `cli_${pins.RENDER_CLI_VERSION}_linux_`;
+  const downloads = {
+    render: `https://github.com/render-oss/cli/releases/download/v${pins.RENDER_CLI_VERSION}/${renderAsset}`,
+    revyl: `https://github.com/RevylAI/revyl-cli/releases/download/v${pins.REVYL_CLI_VERSION}/revyl-linux-`,
+  };
+  // The fixture's release assets: a stand-in Render zip that the unzip stub expands, and a Revyl
+  // script binary. Setup verifies their digests, so the fixture pins those digests below.
+  const fixtureAssets = {
+    render: "fixture Render CLI archive\n",
+    revyl: `#!/usr/bin/env node\nconsole.log("revyl version v${pins.REVYL_CLI_VERSION}");\n`,
+  };
+  const sha256 = (content) => createHash("sha256").update(content).digest("hex");
   write(path.join(stubs, "curl"), `#!/usr/bin/env node
 import assert from "node:assert/strict";
+import { appendFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
-assert.equal(args.length, 2);
 assert.equal(args[0], "-fsSL");
-const agent = {
-  "https://claude.ai/install.sh": "claude",
-  "https://chatgpt.com/codex/install.sh": "codex",
-}[args[1]];
-assert(agent, "Only supported vendor installer URLs may be requested");
-process.stdout.write('exec node "$SETUP_TEST_NATIVE_INSTALLER" ' + agent + ' "$@"\\n');
+if (args.length === 2) {
+  const agent = {
+    "https://claude.ai/install.sh": "claude",
+    "https://chatgpt.com/codex/install.sh": "codex",
+  }[args[1]];
+  assert(agent, "Only supported vendor installer URLs may be piped to a shell");
+  process.stdout.write('exec node "$SETUP_TEST_NATIVE_INSTALLER" ' + agent + ' "$@"\\n');
+} else {
+  assert.equal(args.length, 4, "Pinned downloads use curl -fsSL -o FILE URL");
+  assert.equal(args[1], "-o");
+  const downloads = ${JSON.stringify(downloads)};
+  const assets = ${JSON.stringify(fixtureAssets)};
+  const tool = Object.keys(downloads).find((name) =>
+    new RegExp("^" + downloads[name].replace(/[.]/g, "[.]") + "(amd64|arm64)" + (name === "render" ? "[.]zip" : "") + "$").test(args[3]));
+  assert(tool, "Only the pinned Render and Revyl release assets may be downloaded: " + args[3]);
+  writeFileSync(args[2], assets[tool]);
+  appendFileSync(process.env.SETUP_TEST_INSTALLS, JSON.stringify({ agent: tool, args: [args[3].replace(/(amd64|arm64)/, "ARCH")] }) + "\\n");
+}
+`, 0o755);
+  write(path.join(stubs, "unzip"), `#!/usr/bin/env node
+import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+assert.deepEqual([args[0], args[1], args[3], args[4]], ["-q", "-o", "cli_v${pins.RENDER_CLI_VERSION}", "-d"]);
+assert.equal(readFileSync(args[2], "utf8"), ${JSON.stringify(fixtureAssets.render)});
+writeFileSync(path.join(args[5], args[3]), "#!/usr/bin/env node\\nconsole.log(" +
+  JSON.stringify("render v${pins.RENDER_CLI_VERSION}") + ");\\n", { mode: 0o755 });
 `, 0o755);
   write(environment.SETUP_TEST_NATIVE_INSTALLER, `import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -100,20 +139,21 @@ const args = process.argv.slice(2);
 const prefix = path.join(process.env.HOME, ".local");
 assert.deepEqual(args.slice(0, 4), ["install", "--global", "--prefix", prefix]);
 assert.equal(args.length, 5);
-const version = args[4].match(/^@firstdraft[.]com\\/cli@([0-9]+[.][0-9]+[.][0-9]+)$/)?.[1];
-assert(version, "Only the pinned First Draft CLI may use npm");
-appendFileSync(process.env.SETUP_TEST_INSTALLS, JSON.stringify({ agent: "firstdraft", args }) + "\\n");
+const [, name, version] = args[4].match(/^(@firstdraft[.]com\\/cli|neonctl)@([0-9]+[.][0-9]+[.][0-9]+)$/) ?? [];
+assert(name, "Only the pinned First Draft CLI and neonctl may use npm");
+const command = name === "neonctl" ? "neonctl" : "firstdraft";
+appendFileSync(process.env.SETUP_TEST_INSTALLS, JSON.stringify({ agent: command, args }) + "\\n");
 mkdirSync(path.join(prefix, "bin"), { recursive: true });
-writeFileSync(path.join(prefix, "bin/firstdraft"), "#!/usr/bin/env node\\nconsole.log(" +
-  JSON.stringify("firstdraft " + version) + ");\\n", { mode: 0o755 });
+writeFileSync(path.join(prefix, "bin", command), "#!/usr/bin/env node\\nconsole.log(" +
+  JSON.stringify(command === "neonctl" ? version : "firstdraft " + version) + ");\\n", { mode: 0o755 });
 `, 0o755);
 
   const devcontainer = path.join(workspace, ".devcontainer");
   mkdirSync(devcontainer);
-  for (const helper of ["agent-skills.mjs", "configure-codex.mjs"]) {
+  for (const helper of ["agent-skills.mjs", "configure-codex.mjs", "workshop-notes.mjs"]) {
     copyFileSync(path.join(repository, ".devcontainer", helper), path.join(devcontainer, helper));
   }
-  copyFileSync(path.join(repository, ".env.example"), path.join(workspace, ".env.example"));
+  cpSync(path.join(repository, ".devcontainer", "workshop"), path.join(devcontainer, "workshop"), { recursive: true });
   const setup = readFileSync(path.join(repository, ".devcontainer/setup-agents"), "utf8");
   const hostEnvironmentGuard = "if [[ -x /usr/sbin/sshd && -f /etc/environment ]]; then";
   assert.equal(setup.split(hostEnvironmentGuard).length, 2, "Review fixture isolation if the host integration changes");
@@ -134,8 +174,10 @@ writeFileSync(path.join(prefix, "bin/firstdraft"), "#!/usr/bin/env node\\nconsol
   const revision = git(["rev-parse", "HEAD"]);
   const checkout = path.join(cache, revision);
   renameSync(candidate, checkout);
-  write(path.join(devcontainer, "agent-versions.env"), versions.replace(/^FIRSTDRAFT_SKILLS_REVISION=.+$/m,
-    `FIRSTDRAFT_SKILLS_REVISION=${revision}`));
+  write(path.join(devcontainer, "agent-versions.env"), versions
+    .replace(/^FIRSTDRAFT_SKILLS_REVISION=.+$/m, `FIRSTDRAFT_SKILLS_REVISION=${revision}`)
+    .replace(/^RENDER_CLI_SHA256_(AMD64|ARM64)=.+$/gm, (_, arch) => `RENDER_CLI_SHA256_${arch}=${sha256(fixtureAssets.render)}`)
+    .replace(/^REVYL_CLI_SHA256_(AMD64|ARM64)=.+$/gm, (_, arch) => `REVYL_CLI_SHA256_${arch}=${sha256(fixtureAssets.revyl)}`));
 
   const preserved = new Map([
     [path.join(home, ".claude.json"), '{"fixture":"existing user settings"}\n'],
@@ -148,14 +190,31 @@ writeFileSync(path.join(prefix, "bin/firstdraft"), "#!/usr/bin/env node\\nconsol
     [path.join(environment.CODEX_HOME, "sessions/session.jsonl"), '{"fixture":"existing Codex conversation"}\n'],
     [path.join(environment.CLAUDE_CONFIG_DIR, "skills/user-skill/SKILL.md"), "Claude user Skill\n"],
     [path.join(home, ".agents/skills/user-skill/SKILL.md"), "Codex user Skill\n"],
-    [path.join(workspace, ".env"), `FIRSTDRAFT_API_URL=https://firstdraft.com\n${"FIRSTDRAFT_API_TOKEN"}=fixture-placeholder\n`],
   ]);
+  const userNotes = "# The user's own Claude notes\n";
+  write(path.join(environment.CLAUDE_CONFIG_DIR, "CLAUDE.md"), userNotes);
   for (const [file, content] of preserved) write(file, content);
+  const notes = readFileSync(path.join(repository, ".devcontainer/workshop/app-instructions.md"), "utf8").trimEnd();
+  const block = `<!-- drawing-board-workshop: start -->\n${notes}\n<!-- drawing-board-workshop: end -->\n`;
   const verifyPreserved = () => {
     for (const [file, content] of preserved) assert.equal(readFileSync(file, "utf8"), content, `Setup changed ${file}`);
     for (const root of [path.join(environment.CLAUDE_CONFIG_DIR, "skills"), path.join(home, ".agents/skills")]) {
       assert.equal(realpathSync(path.join(root, skillName)), path.join(checkout, "skills", skillName));
+      assert.equal(readFileSync(path.join(root, "workshop-signin/SKILL.md"), "utf8"),
+        readFileSync(path.join(repository, ".devcontainer/workshop/skills/workshop-signin/SKILL.md"), "utf8"));
     }
+    assert.equal(readFileSync(path.join(environment.CLAUDE_CONFIG_DIR, "CLAUDE.md"), "utf8"), `${userNotes}\n${block}`,
+      "Setup must keep the user's own Claude notes and hold exactly one workshop block");
+    assert.equal(readFileSync(path.join(environment.CODEX_HOME, "AGENTS.md"), "utf8"), block);
+    assert.equal(statSync(path.join(home, ".workshop")).mode & 0o777, 0o700);
+    for (const helper of ["auth.sh", "cloudinary.sh", "git-identity.sh", "login.sh", "neon-key.sh", "open.sh", "render-workspace.sh"]) {
+      assert.equal(statSync(path.join(home, ".workshop", helper)).mode & 0o777, 0o755, `missing workshop helper ${helper}`);
+    }
+    assert.equal(run(path.join(home, ".local/bin/render"), ["--version"]), `render v${pins.RENDER_CLI_VERSION}`);
+    assert.equal(run(path.join(home, ".local/bin/neonctl"), ["--version"]), pins.NEONCTL_VERSION);
+    assert(lstatSync(path.join(home, ".local/bin/revyl")).isSymbolicLink());
+    assert.equal(run(path.join(home, ".local/bin/revyl"), ["--version"]), `revyl version v${pins.REVYL_CLI_VERSION}`);
+    assert.equal(existsSync(path.join(workspace, ".env")), false, "Setup must not create a First Draft .env");
   };
   const publishFixtureRelease = (version) => write(environment.SETUP_TEST_REGISTRY, JSON.stringify({
     claude: version, codex: version,
@@ -164,6 +223,9 @@ writeFileSync(path.join(prefix, "bin/firstdraft"), "#!/usr/bin/env node\\nconsol
     { agent: "claude", args: [] },
     { agent: "codex", args: ["--release", "latest"] },
     { agent: "firstdraft", args: ["install", "--global", "--prefix", path.join(home, ".local"), `@firstdraft.com/cli@${pins.FIRSTDRAFT_CLI_VERSION}`] },
+    { agent: "neonctl", args: ["install", "--global", "--prefix", path.join(home, ".local"), `neonctl@${pins.NEONCTL_VERSION}`] },
+    { agent: "render", args: [`${downloads.render}ARCH.zip`] },
+    { agent: "revyl", args: [`${downloads.revyl}ARCH`] },
   ];
   const installs = () => readFileSync(environment.SETUP_TEST_INSTALLS, "utf8").trim().split("\n").map(JSON.parse);
   const byAgent = (records) => records.toSorted((left, right) => left.agent.localeCompare(right.agent));
@@ -180,8 +242,8 @@ writeFileSync(path.join(prefix, "bin/firstdraft"), "#!/usr/bin/env node\\nconsol
   run("bash", ["-o", "pipefail", "-c", 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh -s -- --release latest']);
   for (const agent of ["claude", "codex"]) assert.equal(run(path.join(home, ".local/bin", agent), ["--version"]), `${agent} 2.0.0`);
   const rerun = run("bash", [path.join(devcontainer, "setup-agents")]);
-  assert.equal(installs().length, 8);
-  assert.deepEqual(byAgent(installs().slice(-3)), expectedInstalls, "Reruns must not reapply an obsolete client pin");
+  assert.equal(installs().length, 2 * expectedInstalls.length + 2);
+  assert.deepEqual(byAgent(installs().slice(-expectedInstalls.length)), expectedInstalls, "Reruns must not reapply an obsolete client pin");
   assert(rerun.includes("claude 2.0.0") && rerun.includes("codex 2.0.0"));
   assert(rerun.includes(`firstdraft ${pins.FIRSTDRAFT_CLI_VERSION}`));
   verifyPreserved();
@@ -189,4 +251,4 @@ writeFileSync(path.join(prefix, "bin/firstdraft"), "#!/usr/bin/env node\\nconsol
   rmSync(temporary, { recursive: true, force: true });
 }
 
-console.log("Offline native installer selectors, pinned CLI, rerun, and user-state preservation checks passed.");
+console.log("Offline native installer selectors, pinned CLIs, workshop helpers, rerun, and user-state preservation checks passed.");

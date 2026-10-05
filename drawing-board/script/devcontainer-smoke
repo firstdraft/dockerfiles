@@ -61,20 +61,18 @@ test "$(PATH="$shared_path" command -v codex)" = "$HOME/.local/bin/codex"
 
 test "$(command -v firstdraft)" = "$PWD/bin/firstdraft"
 test "$(ruby -rrbconfig -e 'print RbConfig.ruby')" = "$(mise which ruby)"
-test ! -L .env
-test -f .env
-test -O .env
-test "$(stat -c '%a' .env)" = "600"
+test ! -e .env
 
-FIRSTDRAFT_CLI_DEFAULT_API_URL="$FIRSTDRAFT_CLI_DEFAULT_API_URL" node -e '
-  const {parseEnv} = require("node:util");
-  const parsed = parseEnv(require("node:fs").readFileSync(".env", "utf8"));
-  const valid = Object.keys(parsed).sort().join(",") ===
-      "FIRSTDRAFT_API_TOKEN,FIRSTDRAFT_API_URL" &&
-    parsed.FIRSTDRAFT_API_URL === process.env.FIRSTDRAFT_CLI_DEFAULT_API_URL &&
-    parsed.FIRSTDRAFT_API_TOKEN === "";
-  process.exit(valid ? 0 : 1);
-'
+# The deploy and preview CLIs resolve on the shared PATH, and every Claude and Codex session loads
+# the workshop's app-session notes.
+for command in render neonctl revyl; do
+  test "$(PATH="$shared_path" command -v "$command")" = "$HOME/.local/bin/$command"
+done
+for notes in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md" "${CODEX_HOME:-$HOME/.codex}/AGENTS.md"; do
+  test "$(grep -Fxc '<!-- drawing-board-workshop: start -->' "$notes")" = 1
+done
+# A fresh workspace has no First Draft login, and the check says so without failing to run.
+test "$(bash "$HOME/.workshop/auth.sh" check firstdraft || true)" = "[FAIL] firstdraft: not signed in"
 
 test "$DB_HOST" = "postgres"
 test "$SELENIUM_HOST" = "selenium"
