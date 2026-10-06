@@ -82,23 +82,49 @@ printf '%s' "\${CURL_TEST_STATUS:-200}"
     `OTHER=kept\nCLOUDINARY_URL=cloudinary://${key}:${secret}@fixture-cloud\n`);
   assert.equal(mode(path.join(app, ".env.development.local")), 0o600);
 
-  // Neon: the pasted API key reaches neonctl on stdin only, and the form is deleted.
+  // Neon: the pasted API key reaches neonctl on stdin only. The stub keeps the saved key beside
+  // itself and answers 'profile list' and 'me' as neonctl 8 does: an organization key saves, but
+  // 'me' cannot read the user, so save keeps the form and asks for a personal key.
   const neonKey = "napi_fixturefixturefixturefixture";
+  const neonOrgKey = "napi_orgfixtureorgfixtureorgfixture";
+  const neonSaved = path.join(stubs, "neon-saved-key");
   write(path.join(stubs, "neonctl"), `#!/bin/sh
-case "$*" in *"${neonKey}"*) echo "key on the command line" >&2; exit 9 ;; esac
-[ "$*" = "profile create DEFAULT --api-key -" ] || { echo "unexpected: $*" >&2; exit 9; }
-[ "$(cat)" = "${neonKey}" ] || { echo "key missing from stdin" >&2; exit 9; }
+case "$*" in *"${neonKey}"* | *"${neonOrgKey}"*) echo "key on the command line" >&2; exit 9 ;; esac
+case "$*" in
+  "profile create DEFAULT --api-key -")
+    key=$(cat)
+    case "$key" in "${neonKey}" | "${neonOrgKey}") printf '%s' "$key" > "${neonSaved}" ;; *) echo "key missing from stdin" >&2; exit 9 ;; esac ;;
+  "profile list --output json")
+    if [ ! -f "${neonSaved}" ]; then auth=- scope=-
+    elif [ "$(cat "${neonSaved}")" = "${neonOrgKey}" ]; then auth="api key" scope="org org-fixture"
+    else auth="api key" scope=account; fi
+    printf '[{"active":"*","name":"DEFAULT","auth":"%s","scope":"%s"}]\\n' "$auth" "$scope" ;;
+  "me --output json")
+    [ -f "${neonSaved}" ] || { echo "me while signed out starts a browser sign-in" >&2; exit 9; }
+    [ "$(cat "${neonSaved}")" = "${neonOrgKey}" ] && { echo "ERROR: not allowed for organization API keys" >&2; exit 1; }
+    echo '{"email":"attendee@example.com"}' ;;
+  *) echo "unexpected: $*" >&2; exit 9 ;;
+esac
 `, 0o755);
+  assert.equal(helper("auth.sh", ["check", "neon"]).output, "[FAIL] neon: not signed in\n");
   helper("neon-key.sh", ["open"]);
   const neonForm = path.join(home, ".workshop/neon-key.txt");
   assert.equal(mode(neonForm), 0o600);
   assert.match(helper("neon-key.sh", ["save"]).output, /^NEXT: /);
-  writeFileSync(neonForm, readFileSync(neonForm, "utf8").replace(/^NEON_API_KEY=$/m, `NEON_API_KEY=${neonKey}`));
+  writeFileSync(neonForm, readFileSync(neonForm, "utf8").replace(/^NEON_API_KEY=$/m, `NEON_API_KEY=${neonOrgKey}`));
+  result = helper("neon-key.sh", ["save"]);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /^INVALID: .*organization or project API key.*personal key/);
+  assert(!result.output.includes(neonOrgKey));
+  assert.equal(existsSync(neonForm), true);
+  assert.match(helper("auth.sh", ["check", "neon"]).output, /^\[FAIL\] neon: the saved key is an organization or project API key/);
+  writeFileSync(neonForm, readFileSync(neonForm, "utf8").replace(/^NEON_API_KEY=.*$/m, `NEON_API_KEY=${neonKey}`));
   result = helper("neon-key.sh", ["save"]);
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /^SAVED: /);
   assert(!result.output.includes(neonKey));
   assert.equal(existsSync(neonForm), false);
+  assert.equal(helper("auth.sh", ["check", "neon"]).output, "[PASS] neon: signed in\n");
 
   // login.sh returns the device link and code while the sign-in keeps waiting in the background.
   write(path.join(stubs, "render"), `#!/bin/sh
@@ -139,7 +165,6 @@ esac
   write(path.join(home, ".config/firstdraft/credentials.json"),
     JSON.stringify({ origins: { "https://staging.firstdraft.com": { access_token: token } } }), 0o600);
   assert.equal(helper("auth.sh", ["check", "firstdraft"]).output, "[FAIL] firstdraft: not signed in\n");
-  assert.equal(helper("auth.sh", ["check", "neon"]).output, "[FAIL] neon: not signed in\n");
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }
