@@ -19,6 +19,13 @@ runs:
         directory="$(mktemp -d tmp/drawing-board-checks.XXXXXX)"
         cp -R "$CHECKS_SOURCE/script" "$CHECKS_SOURCE/image" "$directory/"
         echo "directory=$directory" >> "$GITHUB_OUTPUT"
+    # Buildx 0.37.2 refuses the Dev Containers CLI's Compose build of its generated Dockerfile
+    # (devcontainers/cli#1320). Keep 0.37.1, on the runner's own Docker engine, until a CLI
+    # release fixes that.
+    - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      with:
+        version: v0.37.1
+        driver: docker
     - uses: devcontainers/ci@513af61f4de4f75d37e4438f184ba4358f0fc1ca # v0.3.1900000450
       with:
         subFolder: ${{ inputs.workspace }}
