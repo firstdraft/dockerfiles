@@ -80,15 +80,14 @@ for script in "$checks"/{check,agent-smoke,devcontainer-smoke,devcontainer-image
   bash -n "$script"
   test -x "$script"
 done
-for javascript in .devcontainer/*.mjs bin/firstdraft script/*.mjs "$checks"/*.mjs; do
+for javascript in .devcontainer/*.mjs script/*.mjs "$checks"/*.mjs; do
   node --check "$javascript"
 done
-test -x bin/firstdraft
-for check in check-firstdraft-wrapper check-agent-skills check-agent-setup check-workshop-helpers check-initialize-application; do
+for check in check-agent-setup check-workshop-helpers check-initialize-application; do
   node "$checks/$check.mjs"
 done
 
-expected_bin_entries=$'bin/agent-doctor\nbin/firstdraft\nbin/review-plan-with-claude\nbin/review-plan-with-codex'
+expected_bin_entries=$'bin/agent-doctor\nbin/review-plan-with-claude\nbin/review-plan-with-codex'
 actual_bin_entries="$(find bin -mindepth 1 -maxdepth 1 -print | sort)"
 if [[ "$actual_bin_entries" != "$expected_bin_entries" ]]; then
   echo "Review the devcontainer PATH contract before adding another file under bin/." >&2
@@ -109,7 +108,7 @@ workspace_path="$(node -e '
   process.stdout.write(configuration.remoteEnv?.PATH ?? "");
 ')"
 if [[ "$workspace_path" != '${containerWorkspaceFolder}/bin:/home/vscode/.local/bin:${containerEnv:PATH}' ]]; then
-  echo "The devcontainer PATH must prefer the Drawing Board wrapper." >&2
+  echo "The devcontainer PATH must put the workspace's bin/ and the agents' ~/.local/bin first." >&2
   exit 1
 fi
 
@@ -170,8 +169,8 @@ fi
 
 "$checks/check-depth-one"
 
-if [[ "$FIRSTDRAFT_CLI_DEFAULT_API_URL" != "https://firstdraft.com" ]]; then
-  echo "The pinned releases no longer match the documented production-wrapper contract." >&2
+if grep -q '^FIRSTDRAFT_' .devcontainer/agent-versions.env; then
+  echo "The template pins no First Draft version: a Codespace installs the plugin its catalog offers." >&2
   exit 1
 fi
 
@@ -184,25 +183,6 @@ fi
 
 if [[ -e .claude/settings.json ]]; then
   echo "Claude settings must remain user-scoped, not committed to the Drawing Board." >&2
-  exit 1
-fi
-
-if [[ "$FIRSTDRAFT_CLAUDE_SKILL_NAME" != "create-full-stack-app" ]]; then
-  echo "The Claude Skill name must match the canonical Skill." >&2
-  exit 1
-fi
-if [[ "$FIRSTDRAFT_CODEX_SKILL_NAME" != "firstdraft:create-full-stack-app" ]]; then
-  echo "The Codex Skill name must match the canonical namespaced Skill." >&2
-  exit 1
-fi
-
-if [[ ! "$FIRSTDRAFT_SKILLS_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "The First Draft Skill revision must be one exact commit SHA." >&2
-  exit 1
-fi
-
-if [[ ! "$FIRSTDRAFT_CLI_VERSION" =~ ^0\.[0-9]+\.[0-9]+$ ]]; then
-  echo "The First Draft CLI version must use ordinary pre-1.0 SemVer." >&2
   exit 1
 fi
 

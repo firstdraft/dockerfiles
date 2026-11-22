@@ -12,14 +12,16 @@ disposable Drawing Board checkout. Keep credentials and user work out of that ch
 
 A repository created from this template must provide one ready-to-use workspace for Claude or Codex:
 
-- the Dev Container installs the latest public Claude Code and Codex releases, the exact reviewed First Draft CLI,
-  and the exact Render, Neon and Revyl CLIs that the workshop's command-line deploy and phone preview use;
-- every Skill declared by one exact source revision is linked into both agents;
-- First Draft sign-in is the CLI's own saved login from `firstdraft login --device`, kept outside the workspace;
+- the Dev Container installs the latest public Claude Code and Codex releases, and the exact Render, Neon and Revyl
+  CLIs that the workshop's command-line deploy and phone preview use;
+- each agent installs the First Draft plugin from First Draft's catalog with its own plugin commands. The plugin is
+  the only First Draft install and holds the Skill and the CLI it was tested with; the template pins no First Draft
+  version, so a new Codespace gets what the catalog offers that day;
+- First Draft sign-in is the plugin CLI's own saved login from its device login, kept outside the workspace;
 - the laptop kit's sign-in helpers, `workshop-signin` Skill and app-session notes are installed in their Codespaces
   form, the notes in the user-level `CLAUDE.md` and Codex `AGENTS.md` so they survive root Compile;
-- bare `firstdraft` on the Codespace PATH resolves to `bin/firstdraft`, and AGENTS.md routes Skill-issued commands
-  through that wrapper; and
+- no `firstdraft` command is on the Codespace PATH: agents run the CLI through the Skill's helper, and the terminal
+  and workshop helpers through `~/.workshop/firstdraft.sh`; and
 - the same container carries the current generated Foundation's Ruby and Node toolchain plus healthy PostgreSQL;
   generated browser tests start Selenium on demand, so the generated application can be
   developed without a second Codespace.
@@ -48,7 +50,7 @@ The accepted cross-repository sequence and its safety boundaries live in
 |---|---|
 | Drawing Board `.devcontainer/` | Runtime Compose, lifecycle configuration, agent setup and selected tool pins |
 | Drawing Board `.devcontainer/workshop/` | Codespaces copies of the laptop kit's sign-in helpers, Skill and app-session notes |
-| Drawing Board `bin/` | CLI wrapper, installation diagnostics and optional Plan review |
+| Drawing Board `bin/` | Installation diagnostics and optional Plan review |
 | Drawing Board `script/initialize-application` and inventory modules | Nested application's initial Git checkpoint |
 | Drawing Board `script/refresh-codespaces-private-port` | Existing Codespaces attachment behavior |
 | `image/` | Dockerfile, locked build Features and the historical published-image receipt |
@@ -114,10 +116,11 @@ New Codespaces install the vendors' latest public agents using their native inst
 installer defaults to `latest` and preserves an existing user's channel choice on explicit setup reruns. Codex
 selects `latest` explicitly. Temporary exact agent pins need a demonstrated regression or an explicitly frozen
 experiment with its reason recorded; update the setup policy check and qualification receipt with that exception.
-First Draft CLI/Skills/service compatibility and the language, database, and image pins follow separate policies.
+The First Draft plugin follows its catalog, as described below; the language, database, and image pins follow
+separate policies.
 
 Native installers and vendor updates share the user-owned `~/.local/bin` launchers. A container-wide npm prefix
-breaks the image's interactive nvm initialization, so only the pinned First Draft CLI uses a per-command npm prefix.
+breaks the image's interactive nvm initialization, so only the pinned Neon CLI uses a per-command npm prefix.
 Claude's normal updater is enabled; users can also run `claude update`. Codex offers updates through its normal
 update prompt or `codex update`. These are different vendor mechanisms; Drawing Board does not run an updater or
 reinstall agents on attach/resume. See
@@ -127,31 +130,66 @@ reinstall agents on attach/resume. See
 
 The existing named volumes retain `/home/vscode/.claude`, `/home/vscode/.codex`, and `/home/vscode/.cache` across
 container rebuilds. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` select those config/conversation homes. Setup recreates
-executables under `~/.local` and the shared Skill links, preserves unrelated Skills and user settings, and only
-seeds Codex defaults when its config is absent. It never resets authentication or conversation directories.
-Historical qualification receipts retain the versions they actually tested; current smoke output records the
-installed versions instead of requiring a historical client number. `script/agent-smoke` can run without Rails or
-PostgreSQL, and is also called by `script/devcontainer-smoke`.
+executables under `~/.local`, adds the First Draft catalog and plugin to each agent, preserves unrelated Skills and
+user settings, and only seeds Codex defaults when its config is absent, so it runs `configure-codex.mjs` before any
+Codex plugin command writes that config. It never resets authentication or
+conversation directories. Historical qualification receipts retain the versions they actually tested; current smoke
+output records the installed versions instead of requiring a historical client number. `script/agent-smoke` can run
+without Rails or PostgreSQL, and is also called by `script/devcontainer-smoke`.
 
 Keep `CLAUDE.md` as the minimal `@AGENTS.md` import. Claude's native discovery still has first-session and
 feature-availability restrictions; upgrading alone does not qualify import removal. The shared instruction source
 remains `AGENTS.md`. See [Anthropic's discovery limits](https://code.claude.com/docs/en/memory#agents-md) and the
 [installation qualification boundary](docs/DIRECT_COMPILATION_PLAN.md#agent-release-policy-and-qualification-2026-09-18).
 
-Skill linking reads the pinned checkout's `.claude-plugin/plugin.json` and links all declared canonical Skill
-folders into Claude's configured `skills/` and Codex's `~/.agents/skills/`. Both clients therefore read the same
-reference files as well as the same entrypoints. The installer preflights collisions, preserves unrelated files
-and symlinks, and removes obsolete links only when they point into the managed First Draft revision cache.
-`bin/agent-doctor` checks the complete inventory. The agent smoke verifies every namespaced Codex Skill in
-model-visible context and Claude's catalog loading of the same installed sources in an isolated home. Claude's
-`--init-only` probe disables hooks and MCP configuration and reads discovery diagnostics without a model turn.
-Neither probe proves authenticated invocation. The optional npm plugin remains a separate installation path owned
-by the Skills repo.
+### The First Draft plugin
 
-The offline check covers one-Skill and three-Skill manifests without changing distribution pins. Linking changes
-alone do not make unreleased Skills available. The UI infrastructure release distributes `create-full-stack-app`
-only; selection and packaging of application UI Skills remain deferred. Qualify the exact declared inventory in
-the built container and both agent adapters before changing its pin.
+The plugin holds the `create-full-stack-app` Skill and the CLI it was tested with. Setup installs it with each
+agent's own plugin commands and nothing else installs the CLI:
+
+```sh
+claude plugin marketplace add firstdraft/skills --scope user
+claude plugin install firstdraft@firstdraft-skills --scope user
+codex plugin marketplace add firstdraft/skills
+codex plugin add firstdraft@firstdraft-skills
+```
+
+`claude plugin marketplace add` declares the catalog under `extraKnownMarketplaces` in the user's Claude settings;
+setup then sets `"autoUpdate": true` on that entry, because Claude Code turns on background updates for a
+third-party catalog only through that setting or its `/plugin` toggle
+([When auto-update runs](https://code.claude.com/docs/en/plugins/loading#when-auto-update-runs)). Codex documents
+`codex plugin marketplace upgrade` for refreshing a Git catalog; its documentation does not say that it refreshes
+one by itself. Updating an existing Codespace's plugin is the agents' job: setup only installs it.
+
+Claude Code puts the plugin's `bin/` on its Bash tool's `PATH`; Codex does not, and neither agent puts it on a
+terminal's `PATH`. Each agent runs the CLI through the Skill's own helper. The terminal, `bin/agent-doctor` and the
+workshop helpers use `~/.workshop/firstdraft.sh`, which asks `claude plugin list --json` where the plugin loads
+from now, `readFromFolder` when it has one and otherwise `installPath`, and runs its `bin/firstdraft`; that path
+changes with every plugin version, so nothing records it.
+`bin/agent-doctor` checks both agents' installs, the CLI's version, and, without `--installation-only`, runs
+`firstdraft start`. The agent smoke checks that no `firstdraft` command is on the `PATH`, that the catalog's
+automatic updates are on, and that each agent discovers the Skill from its own installed copy without a sign-in or
+model turn: Claude through `claude plugin details`, Codex in model-visible context as
+`firstdraft:create-full-stack-app`. Neither probe proves authenticated invocation. In Claude Code the Skill is
+`/firstdraft:create-full-stack-app` ([plugin skill names](https://code.claude.com/docs/en/skills#how-a-skill-gets-its-command-name));
+in Codex it is `$firstdraft:create-full-stack-app`.
+
+Setup reads `FIRSTDRAFT_PLUGIN_CATALOG` in place of `firstdraft/skills` when it is set. To qualify a plugin before
+the catalog offers it, stage it with the Skills repository's `script/claude-plugin-package.mjs stage`, put it in a
+local catalog directory under the candidate's ignored `tmp/` whose `.claude-plugin/marketplace.json` is named
+`firstdraft-skills` and lists the `firstdraft` plugin by a relative path, and start a Dev Container with new agent
+homes whose first setup already sees the variable:
+
+```sh
+devcontainer up --workspace-folder "$DRAWING_BOARD_PATH" \
+  --mount "type=bind,source=$PWD,target=/opt/board-checks" \
+  --remote-env FIRSTDRAFT_PLUGIN_CATALOG=/workspaces/drawing-board/tmp/catalog
+```
+
+Then run `script/check` and both smokes in it, as in [Work on the template](#work-on-the-template). A container
+whose setup already added the public catalog keeps it: Codex refuses a second source under the same catalog name.
+Claude Code loads a plugin from a local catalog in place, from the folder that `claude plugin list --json` reports
+as `readFromFolder`, and does not auto-update it.
 
 The current template consumes a public development image by immutable manifest digest. A credential-free manifest
 request reproduced that exact multi-platform index, so ordinary template-derived Codespaces can pull it without
@@ -260,21 +298,18 @@ future generated target revision.
 
 ## Release handoff and periodic tool refresh
 
-Drawing Board is a post-publication follow-up in the
-[coordinated release process](https://github.com/firstdraft/firstdraft/blob/main/RELEASE_COORDINATION.md#drawing-board-release-handoff).
-After the service and packages are released, update `FIRSTDRAFT_CLI_VERSION` and `FIRSTDRAFT_SKILLS_REVISION` in
-`.devcontainer/agent-versions.env` to the published compatible CLI and the released plugin's exact source revision
-(the commit of its `claude-v*` tag).
-Reconcile the wrapper, setup messages, guide, root-adoption paths, and affected fixtures. Run `script/check "$DRAWING_BOARD_PATH"`, require
-the pull request's built-container CI, and verify the merged revision's prebuild before declaring the template ready.
-Record the selected pins and observed checks; installation and discovery do not prove authenticated Compilation.
-This update and its prebuild do not block package publication. Pins install during workspace setup, so changing
-them alone requires no workspace-image rebuild. Local development starts in an empty folder; this template serves
-the Codespaces fallback.
+A First Draft release needs no template change: a new Codespace installs the plugin the catalog offers, and the
+agents' own updaters update existing ones. The coordinated release therefore has no Drawing Board pin step; the
+step that rewrote the former pins must be gone before this template reaches `main`, or it stops the release. When a release changes what the template's helpers or guide rely on,
+such as the CLI's `start` sentences or the Skill's name, qualify the staged plugin through
+`FIRSTDRAFT_PLUGIN_CATALOG` before the catalog moves, and land the template change only once the catalog offers that
+plugin, because new Codespaces start from the template's `main`. Installation and discovery do not prove
+authenticated Compilation. Local development starts in an empty folder; this template serves the Codespaces
+fallback.
 
 Review tools weekly as well as during releases. Fresh setup already selects the vendors' latest public Claude and
-Codex releases; verify those installers still work with the template. Review the pinned First Draft CLI/Skills,
-Render, Neon and Revyl CLIs, Ruby, Node, PostgreSQL, Dev Container Features, GitHub CLI, and Selenium/image
+Codex releases, and the First Draft plugin its catalog offers; verify those installers still work with the
+template. Review the pinned Render, Neon and Revyl CLIs, Ruby, Node, PostgreSQL, Dev Container Features, GitHub CLI, and Selenium/image
 dependencies against their official releases. Render and Revyl pins carry each Linux asset's published SHA-256;
 Revyl stays on the laptop kit's version unless the kit moves. Prepare small compatible updates and run the checks for the affected surface. A runtime pin must continue
 to match generated Foundations; record a concrete compatibility reason when retaining an older version.
@@ -318,7 +353,7 @@ while its successor runs. The observed configuration uses **Every push**, all fi
 and failure notifications to the maintainer. Region coverage and retention are cost choices; choose them from the
 actual audience rather than adding a separate configuration for each generated repository.
 
-Keep the agent/CLI/Skill install in `postCreateCommand` so tool updates need no workspace-image publication. The
+Keep the agent and plugin install in `postCreateCommand` so tool updates need no workspace-image publication. The
 [hosted experiment](docs/PREBUILD_EXPERIMENT.md) moved preparation into `updateContentCommand`: two prepared launches
 averaged 55.7 seconds to setup completion versus 60.3 seconds for two existing-prebuild baselines. First native CLI
 execution still waited on file reads after snapshot restore. That roughly five-second saving did not justify the
@@ -357,12 +392,12 @@ records the existing built-in-token behavior; relocation adds no publication per
 Never commit a First Draft API token, GitHub token, agent credential, provider key, or `.env`. `script/check` scans
 the Board candidate for common credential shapes and verifies that `.env` remains ignored.
 
-First Draft sign-in is the pinned CLI's saved login: `firstdraft login --device` (run by the `workshop-signin` Skill
-through `~/.workshop/login.sh`) stores a token per origin in `~/.config/firstdraft/credentials.json`, mode 0600, for
-both agents. The template wrapper selects the production origin, `https://firstdraft.com`, which matches the pinned
-CLI's default, and removes any inherited `FIRSTDRAFT_API_TOKEN` or `FIRSTDRAFT_STAGING_API_TOKEN`, because the CLI
-prefers an environment token to its saved login. This applies to the version probe as well as the requested
-command. `bin/agent-doctor` reports whether a production login is saved without reading the token out.
+First Draft sign-in is the plugin CLI's saved login, stored per origin under `~/.config/firstdraft/`, mode 0600, for
+both agents. Its device login is two short commands, `firstdraft login --no-wait` and `firstdraft login --finish`,
+which the authoring Skill runs itself and the `workshop-signin` Skill runs through `~/.workshop/login.sh start` and
+`wait`. The CLI uses production, `https://firstdraft.com`, by default. The Codespace defines no First Draft token;
+the CLI prefers one to its saved login, and `firstdraft start` says when one is set. `bin/agent-doctor` and
+`auth.sh` ask `firstdraft start` whether a login is saved and accepted, so neither reads the credentials file.
 
 Render, Neon and Revyl logins live in each CLI's own home-directory store. Render and Revyl use device approval,
 which works from a browser Codespace. Neon's browser sign-in returns to a 127.0.0.1 listener inside the container
