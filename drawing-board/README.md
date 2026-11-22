@@ -56,8 +56,8 @@ The accepted cross-repository sequence and its safety boundaries live in
 | `image/` | Dockerfile, locked build Features and the historical published-image receipt |
 | `action.yml` | Source checks and two installation smokes in the exact caller checkout's Dev Container |
 | `image/action.yml`, `image/verify/action.yml` | Authorized image build, then AMD64 runtime / ARM64 metadata verification in a dependent job |
-| `script/check*` | Source, credential, installation, preservation, discovery, workshop-helper and Git-initialization checks |
-| `script/agent-smoke`, `script/devcontainer-smoke` | Installed-agent and workspace runtime checks |
+| `script/check*` | Source, credential, installation, preservation, workshop-helper and Git-initialization checks |
+| `script/agent-smoke`, `script/devcontainer-smoke` | Installed-agent, Skill discovery and workspace runtime checks |
 | `script/application-smoke`, `script/selenium` | Optional nested-app qualification; not the root materialization path |
 | `docs/` | Relocation inventory and retained investigation/qualification evidence |
 
