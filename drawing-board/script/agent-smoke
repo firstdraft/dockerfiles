@@ -4,9 +4,6 @@ set -euo pipefail
 checks="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${DRAWING_BOARD_PATH:?Set DRAWING_BOARD_PATH to the candidate checkout.}"
 
-# shellcheck disable=SC1091
-source .devcontainer/agent-versions.env
-
 # Interactive nvm initialization must retain Node and the installed agents.
 for shell_mode in -c -ic -lic; do
   bash "$shell_mode" 'set -e; node --version; npm --version; claude --version; codex --version'
@@ -24,36 +21,36 @@ claude --effort high --permission-mode plan --allowed-tools "Read,Glob,Grep,Skil
 codex --sandbox read-only --ask-for-approval never exec --help >/dev/null
 node "${checks}/check-codex-configuration.mjs" --runtime
 
-compile_help="$(firstdraft plan compile --help)"
+# The plugin is the only First Draft install: a plain shell reaches its CLI only through the plugin.
+if command -v firstdraft >/dev/null; then
+  echo "A firstdraft command is on the plain PATH; nothing but the plugin may install the CLI." >&2
+  exit 1
+fi
+compile_help="$(bash "$HOME/.workshop/firstdraft.sh" plan compile --help)"
 grep -F -- "--output" <<<"$compile_help" >/dev/null
 
-skills_checkout="$HOME/.cache/firstdraft/skills/$FIRSTDRAFT_SKILLS_REVISION"
+# Claude Code updates a third-party catalog's plugins only when its settings entry turns autoUpdate on.
+jq -e '.extraKnownMarketplaces["firstdraft-skills"].autoUpdate == true' \
+  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" >/dev/null
 
-FIRSTDRAFT_CLI_VERSION="$FIRSTDRAFT_CLI_VERSION" \
-  SKILLS_COMPATIBILITY_PATH="$skills_checkout/release/compatibility.json" \
-  node -e '
-    const fs = require("node:fs");
-    const compatibility = JSON.parse(
-      fs.readFileSync(process.env.SKILLS_COMPATIBILITY_PATH, "utf8"),
-    );
-    const expectedCli = [`= ${process.env.FIRSTDRAFT_CLI_VERSION}`];
-    const valid = compatibility.format === "firstdraft.release-compatibility/1" &&
-      compatibility.component === "skills" &&
-      JSON.stringify(compatibility.requires?.cli) === JSON.stringify(expectedCli) &&
-      /^[0-9a-f]{64}$/.test(compatibility.plugin_source?.tarball_sha256 ?? "");
-    process.exit(valid ? 0 : 1);
-  '
-
-prompt_input="$(codex debug prompt-input "Describe the available First Draft Skills.")"
-node .devcontainer/agent-skills.mjs codex \
-  --checkout "$skills_checkout" \
-  --revision "$FIRSTDRAFT_SKILLS_REVISION" \
-  --claude-root "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills" \
-  --codex-root "$HOME/.agents/skills" \
-  --claude-authoring-name "$FIRSTDRAFT_CLAUDE_SKILL_NAME" \
-  --codex-authoring-name "$FIRSTDRAFT_CODEX_SKILL_NAME" <<<"$prompt_input"
-
-node "${checks}/check-claude-discovery.mjs" "$skills_checkout" \
-  "$FIRSTDRAFT_CLAUDE_SKILL_NAME" "$FIRSTDRAFT_CODEX_SKILL_NAME"
+# Each agent discovers the plugin's Skill from its own installed copy, without a sign-in or model turn.
+claude plugin details firstdraft@firstdraft-skills |
+  grep -E '^ *Skills \([0-9]+\) +(.*, )?create-full-stack-app(,|$)' >/dev/null
+codex debug prompt-input "Describe the available First Draft Skills." | node -e '
+  const input = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+  const text = input.flatMap((item) => item.content ?? []).map((content) => content.text ?? "").join("\n");
+  const roots = new Map([...text.matchAll(/^- `(r\d+)` = `([^`]+)`$/gm)].map((match) => [match[1], match[2]]));
+  const lines = text.split("\n").filter((line) => line.startsWith("- firstdraft:create-full-stack-app:"));
+  // Codex names the file by a root alias such as r2/... or by its absolute path.
+  const locator = lines.length === 1 ? lines[0].match(/\(file: (.+)\)$/)?.[1] ?? "" : "";
+  const [, alias, relative] = locator.match(/^(r\d+)\/(.+)$/) ?? [];
+  const file = alias ? (roots.has(alias) ? roots.get(alias) + "/" + relative : "") : locator;
+  const cache = (process.env.CODEX_HOME || process.env.HOME + "/.codex") + "/plugins/cache/firstdraft-skills/firstdraft/";
+  if (!file.startsWith(cache) || !file.endsWith("/skills/create-full-stack-app/SKILL.md")) {
+    console.error("Codex must list firstdraft:create-full-stack-app once, from the installed plugin: " + (file || "missing"));
+    process.exit(1);
+  }
+  console.log("Codex Skill: firstdraft:create-full-stack-app from " + file);
+'
 
 echo "Agent installation smoke passed (no sign-in or model turn)."

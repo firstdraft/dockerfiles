@@ -24,7 +24,6 @@ assert_version() {
   fi
 }
 
-assert_version "$FIRSTDRAFT_CLI_VERSION" firstdraft --version
 assert_version "$FOUNDATION_RUBY_VERSION" ruby --version
 assert_version "v$FOUNDATION_NODE_VERSION" node --version
 psql --version | grep -Eq "^psql \(PostgreSQL\) ${FOUNDATION_POSTGRES_VERSION}\."
@@ -53,13 +52,16 @@ shared_path="$(node -e '
   process.stdout.write(environment.PATH ?? "");
 ')"
 test "${shared_path#"$PWD/bin:$HOME/.local/bin:"}" != "$shared_path"
-test "$(PATH="$shared_path" command -v firstdraft)" = "$PWD/bin/firstdraft"
+# The plugin is the only First Draft install, so no shell finds a firstdraft command on its PATH.
+if PATH="$shared_path" command -v firstdraft >/dev/null; then
+  echo "A firstdraft command is on the shared PATH; nothing but the plugin may install the CLI." >&2
+  exit 1
+fi
 test "$(PATH="$shared_path" command -v claude)" = "$HOME/.local/bin/claude"
 test "$(PATH="$shared_path" command -v codex)" = "$HOME/.local/bin/codex"
 
 "${checks}/agent-smoke"
 
-test "$(command -v firstdraft)" = "$PWD/bin/firstdraft"
 test "$(ruby -rrbconfig -e 'print RbConfig.ruby')" = "$(mise which ruby)"
 test ! -e .env
 
@@ -72,7 +74,8 @@ for notes in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md" "${CODEX_HOME:-$HOM
   test "$(grep -Fxc '<!-- drawing-board-workshop: start -->' "$notes")" = 1
 done
 # A fresh workspace has no First Draft login, and the check says so without failing to run.
-test "$(bash "$HOME/.workshop/auth.sh" check firstdraft || true)" = "[FAIL] firstdraft: not signed in"
+test "$(bash "$HOME/.workshop/auth.sh" check firstdraft || true)" = \
+  "[FAIL] firstdraft: This computer has no saved login for https://firstdraft.com."
 
 test "$DB_HOST" = "postgres"
 test "$SELENIUM_HOST" = "selenium"

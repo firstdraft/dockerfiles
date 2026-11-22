@@ -10,7 +10,6 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   symlinkSync,
   statSync,
@@ -25,6 +24,9 @@ const versions = readFileSync(path.join(repository, ".devcontainer/agent-version
 const pins = Object.fromEntries([...versions.matchAll(/^([A-Z0-9_]+)=(.+)$/gm)].map((match) => match.slice(1)));
 assert(!("CLAUDE_CODE_VERSION" in pins), "Claude uses the no-argument native bootstrap's latest default; a temporary regression pin or frozen experiment must update this check and its qualification receipt");
 assert.equal(pins.CODEX_VERSION, "latest", "CODEX_VERSION: normal policy is latest; a temporary regression pin or frozen experiment must update this check and its qualification receipt");
+assert(!Object.keys(pins).some((name) => name.startsWith("FIRSTDRAFT_")), "The template pins no First Draft version");
+assert(!Object.keys({ ...configuration.containerEnv, ...configuration.remoteEnv }).some((name) => name.startsWith("FIRSTDRAFT_")),
+  "The Codespace defines no First Draft token or origin; the plugin's CLI uses its saved login and production by default");
 const temporary = realpathSync(mkdtempSync(path.join(tmpdir(), "drawing-board-agent-setup-")));
 const home = path.join(temporary, "home");
 const workspace = path.join(temporary, "workspace");
@@ -48,6 +50,7 @@ const environment = {
   SETUP_TEST_REGISTRY: path.join(temporary, "registry.json"),
   SETUP_TEST_INSTALLS: path.join(temporary, "installs.jsonl"),
   SETUP_TEST_NATIVE_INSTALLER: path.join(stubs, "native-install.mjs"),
+  SETUP_TEST_AGENT: path.join(stubs, "agent.mjs"),
 };
 const run = (command, args, cwd = workspace) => {
   const result = spawnSync(command, args, { cwd, env: environment, encoding: "utf8", timeout: 30_000 });
@@ -128,8 +131,66 @@ const version = JSON.parse(readFileSync(process.env.SETUP_TEST_REGISTRY, "utf8")
 assert(version, "Fixture release must exist");
 const bin = path.join(process.env.HOME, ".local/bin");
 mkdirSync(bin, { recursive: true });
-writeFileSync(path.join(bin, agent), "#!/usr/bin/env node\\nconsole.log(" +
-  JSON.stringify(agent + " " + version) + ");\\n", { mode: 0o755 });
+writeFileSync(path.join(bin, agent), "#!/bin/sh\\nexec node " + JSON.stringify(process.env.SETUP_TEST_AGENT) + " " +
+  agent + " " + version + ' "$@"\\n', { mode: 0o755 });
+`);
+  // The installed agents' plugin commands, recorded with their arguments. They change agent state as
+  // the vendors document: adding a catalog to Claude Code declares it in user settings, and installing
+  // the plugin gives it an install path that 'claude plugin list --json' reports.
+  const pluginVersion = "1.2.3";
+  const pluginRoot = path.join(environment.CLAUDE_CONFIG_DIR, "plugins/cache/firstdraft-skills/firstdraft", pluginVersion);
+  write(environment.SETUP_TEST_AGENT, `import assert from "node:assert/strict";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+const [agent, version, ...args] = process.argv.slice(2);
+const command = args.join(" ");
+if (command === "--version") {
+  console.log(agent + " " + version);
+  process.exit(0);
+}
+const pluginRoot = ${JSON.stringify(pluginRoot)};
+const settingsFile = path.join(process.env.CLAUDE_CONFIG_DIR, "settings.json");
+const settings = () => existsSync(settingsFile) ? JSON.parse(readFileSync(settingsFile, "utf8")) : {};
+if (agent === "claude" && command === "plugin list --json") {
+  const installed = settings().enabledPlugins?.["firstdraft@firstdraft-skills"] === true;
+  console.log(JSON.stringify(installed ? [{
+    id: "firstdraft@firstdraft-skills", version: ${JSON.stringify(pluginVersion)}, scope: "user", enabled: true, installPath: pluginRoot,
+  }] : []));
+  process.exit(0);
+}
+appendFileSync(process.env.SETUP_TEST_INSTALLS, JSON.stringify({ agent, args }) + "\\n");
+switch (agent + " " + command) {
+  case "claude plugin marketplace add firstdraft/skills --scope user": {
+    const current = settings();
+    current.extraKnownMarketplaces = {
+      ...current.extraKnownMarketplaces,
+      "firstdraft-skills": { source: { source: "github", repo: "firstdraft/skills" }, ...current.extraKnownMarketplaces?.["firstdraft-skills"] },
+    };
+    writeFileSync(settingsFile, JSON.stringify(current));
+    break;
+  }
+  case "claude plugin install firstdraft@firstdraft-skills --scope user": {
+    const current = settings();
+    assert(current.extraKnownMarketplaces?.["firstdraft-skills"], "Add the catalog before installing from it");
+    current.enabledPlugins = { ...current.enabledPlugins, "firstdraft@firstdraft-skills": true };
+    writeFileSync(settingsFile, JSON.stringify(current));
+    mkdirSync(path.join(pluginRoot, "bin"), { recursive: true });
+    writeFileSync(path.join(pluginRoot, "bin/firstdraft"), '#!/bin/sh\\n[ "$1" = --version ] && echo ' + ${JSON.stringify(pluginVersion)} + "\\n", { mode: 0o755 });
+    break;
+  }
+  case "codex plugin marketplace add firstdraft/skills": {
+    const config = path.join(process.env.CODEX_HOME, "config.toml");
+    const current = existsSync(config) ? readFileSync(config, "utf8") : "";
+    if (!current.includes("[marketplaces.firstdraft-skills]")) {
+      writeFileSync(config, current + '\\n[marketplaces.firstdraft-skills]\\nsource_type = "git"\\n');
+    }
+    break;
+  }
+  case "codex plugin add firstdraft@firstdraft-skills":
+    break;
+  default:
+    assert.fail("Unexpected " + agent + " command: " + command);
+}
 `);
   write(path.join(stubs, "npm"), `#!/usr/bin/env node
 import assert from "node:assert/strict";
@@ -139,18 +200,16 @@ const args = process.argv.slice(2);
 const prefix = path.join(process.env.HOME, ".local");
 assert.deepEqual(args.slice(0, 4), ["install", "--global", "--prefix", prefix]);
 assert.equal(args.length, 5);
-const [, name, version] = args[4].match(/^(@firstdraft[.]com\\/cli|neonctl)@([0-9]+[.][0-9]+[.][0-9]+)$/) ?? [];
-assert(name, "Only the pinned First Draft CLI and neonctl may use npm");
-const command = name === "neonctl" ? "neonctl" : "firstdraft";
-appendFileSync(process.env.SETUP_TEST_INSTALLS, JSON.stringify({ agent: command, args }) + "\\n");
+const [, name, version] = args[4].match(/^(neonctl)@([0-9]+[.][0-9]+[.][0-9]+)$/) ?? [];
+assert(name, "Only the pinned neonctl may use npm; the First Draft plugin is the only First Draft install");
+appendFileSync(process.env.SETUP_TEST_INSTALLS, JSON.stringify({ agent: name, args }) + "\\n");
 mkdirSync(path.join(prefix, "bin"), { recursive: true });
-writeFileSync(path.join(prefix, "bin", command), "#!/usr/bin/env node\\nconsole.log(" +
-  JSON.stringify(command === "neonctl" ? version : "firstdraft " + version) + ");\\n", { mode: 0o755 });
+writeFileSync(path.join(prefix, "bin", name), "#!/usr/bin/env node\\nconsole.log(" + JSON.stringify(version) + ");\\n", { mode: 0o755 });
 `, 0o755);
 
   const devcontainer = path.join(workspace, ".devcontainer");
   mkdirSync(devcontainer);
-  for (const helper of ["agent-skills.mjs", "configure-codex.mjs", "workshop-notes.mjs"]) {
+  for (const helper of ["configure-codex.mjs", "workshop-notes.mjs"]) {
     copyFileSync(path.join(repository, ".devcontainer", helper), path.join(devcontainer, helper));
   }
   cpSync(path.join(repository, ".devcontainer", "workshop"), path.join(devcontainer, "workshop"), { recursive: true });
@@ -159,47 +218,44 @@ writeFileSync(path.join(prefix, "bin", command), "#!/usr/bin/env node\\nconsole.
   assert.equal(setup.split(hostEnvironmentGuard).length, 2, "Review fixture isolation if the host integration changes");
   // Exercise production setup while excluding the SSH host integration, even on Linux.
   write(path.join(devcontainer, "setup-agents"), setup.replace(hostEnvironmentGuard, "if false; then"), 0o755);
-
-  const cache = path.join(home, ".cache/firstdraft/skills");
-  const skillName = pins.FIRSTDRAFT_CLAUDE_SKILL_NAME;
-  const candidate = path.join(cache, "fixture");
-  write(path.join(candidate, ".claude-plugin/plugin.json"), JSON.stringify({
-    name: "firstdraft", skills: [`./skills/${skillName}`],
-  }) + "\n");
-  write(path.join(candidate, "skills", skillName, "SKILL.md"), `---\nname: ${skillName}\n---\nOffline setup fixture.\n`);
-  const git = (args) => run("git", ["-c", "core.hooksPath=/dev/null", "-c", "init.templateDir=", ...args], candidate);
-  git(["init", "--quiet"]);
-  git(["add", "."]);
-  git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Fixture"]);
-  const revision = git(["rev-parse", "HEAD"]);
-  const checkout = path.join(cache, revision);
-  renameSync(candidate, checkout);
   write(path.join(devcontainer, "agent-versions.env"), versions
-    .replace(/^FIRSTDRAFT_SKILLS_REVISION=.+$/m, `FIRSTDRAFT_SKILLS_REVISION=${revision}`)
     .replace(/^RENDER_CLI_SHA256_(AMD64|ARM64)=.+$/gm, (_, arch) => `RENDER_CLI_SHA256_${arch}=${sha256(fixtureAssets.render)}`)
     .replace(/^REVYL_CLI_SHA256_(AMD64|ARM64)=.+$/gm, (_, arch) => `REVYL_CLI_SHA256_${arch}=${sha256(fixtureAssets.revyl)}`));
 
+  const userSettings = { theme: "dark", autoUpdatesChannel: "stable" };
+  const userCodexConfig = 'model = "user-choice"\nsandbox_mode = "workspace-write"\n';
   const preserved = new Map([
     [path.join(home, ".claude.json"), '{"fixture":"existing user settings"}\n'],
     [path.join(environment.CLAUDE_CONFIG_DIR, ".claude.json"), '{"fixture":"mounted global settings"}\n'],
     [path.join(environment.CLAUDE_CONFIG_DIR, ".credentials.json"), '{"fixture":"synthetic Claude credentials"}\n'],
-    [path.join(environment.CLAUDE_CONFIG_DIR, "settings.json"), '{"theme":"dark","autoUpdatesChannel":"stable"}\n'],
     [path.join(environment.CLAUDE_CONFIG_DIR, "projects/workspace/session.jsonl"), '{"fixture":"existing Claude conversation"}\n'],
     [path.join(environment.CODEX_HOME, "auth.json"), '{"fixture":"synthetic Codex credentials"}\n'],
-    [path.join(environment.CODEX_HOME, "config.toml"), 'model = "user-choice"\nsandbox_mode = "workspace-write"\n'],
     [path.join(environment.CODEX_HOME, "sessions/session.jsonl"), '{"fixture":"existing Codex conversation"}\n'],
     [path.join(environment.CLAUDE_CONFIG_DIR, "skills/user-skill/SKILL.md"), "Claude user Skill\n"],
     [path.join(home, ".agents/skills/user-skill/SKILL.md"), "Codex user Skill\n"],
   ]);
   const userNotes = "# The user's own Claude notes\n";
   write(path.join(environment.CLAUDE_CONFIG_DIR, "CLAUDE.md"), userNotes);
+  write(path.join(environment.CLAUDE_CONFIG_DIR, "settings.json"), JSON.stringify(userSettings) + "\n");
+  write(path.join(environment.CODEX_HOME, "config.toml"), userCodexConfig);
   for (const [file, content] of preserved) write(file, content);
   const notes = readFileSync(path.join(repository, ".devcontainer/workshop/app-instructions.md"), "utf8").trimEnd();
   const block = `<!-- drawing-board-workshop: start -->\n${notes}\n<!-- drawing-board-workshop: end -->\n`;
   const verifyPreserved = () => {
     for (const [file, content] of preserved) assert.equal(readFileSync(file, "utf8"), content, `Setup changed ${file}`);
+    // Setup adds only the catalog's automatic updates to the user's own Claude settings.
+    const settings = JSON.parse(readFileSync(path.join(environment.CLAUDE_CONFIG_DIR, "settings.json"), "utf8"));
+    assert.deepEqual(settings, {
+      ...userSettings,
+      extraKnownMarketplaces: {
+        "firstdraft-skills": { source: { source: "github", repo: "firstdraft/skills" }, autoUpdate: true },
+      },
+      enabledPlugins: { "firstdraft@firstdraft-skills": true },
+    });
+    assert(readFileSync(path.join(environment.CODEX_HOME, "config.toml"), "utf8").startsWith(userCodexConfig),
+      "Setup must keep the user's own Codex settings");
     for (const root of [path.join(environment.CLAUDE_CONFIG_DIR, "skills"), path.join(home, ".agents/skills")]) {
-      assert.equal(realpathSync(path.join(root, skillName)), path.join(checkout, "skills", skillName));
+      assert.equal(existsSync(path.join(root, "create-full-stack-app")), false, "The plugin is the only source of the First Draft Skill");
       assert.equal(readFileSync(path.join(root, "workshop-signin/SKILL.md"), "utf8"),
         readFileSync(path.join(repository, ".devcontainer/workshop/skills/workshop-signin/SKILL.md"), "utf8"));
     }
@@ -207,9 +263,11 @@ writeFileSync(path.join(prefix, "bin", command), "#!/usr/bin/env node\\nconsole.
       "Setup must keep the user's own Claude notes and hold exactly one workshop block");
     assert.equal(readFileSync(path.join(environment.CODEX_HOME, "AGENTS.md"), "utf8"), block);
     assert.equal(statSync(path.join(home, ".workshop")).mode & 0o777, 0o700);
-    for (const helper of ["auth.sh", "cloudinary.sh", "git-identity.sh", "login.sh", "neon-key.sh", "open.sh", "render-workspace.sh"]) {
+    for (const helper of ["auth.sh", "cloudinary.sh", "firstdraft.sh", "git-identity.sh", "login.sh", "neon-key.sh", "open.sh", "render-workspace.sh"]) {
       assert.equal(statSync(path.join(home, ".workshop", helper)).mode & 0o777, 0o755, `missing workshop helper ${helper}`);
     }
+    assert.equal(existsSync(path.join(home, ".local/bin/firstdraft")), false, "Nothing but the plugin may install the First Draft CLI");
+    assert.equal(run("bash", [path.join(home, ".workshop/firstdraft.sh"), "--version"]), pluginVersion);
     assert.equal(run(path.join(home, ".local/bin/render"), ["--version"]), `render v${pins.RENDER_CLI_VERSION}`);
     assert.equal(run(path.join(home, ".local/bin/neonctl"), ["--version"]), pins.NEONCTL_VERSION);
     assert(lstatSync(path.join(home, ".local/bin/revyl")).isSymbolicLink());
@@ -221,8 +279,11 @@ writeFileSync(path.join(prefix, "bin", command), "#!/usr/bin/env node\\nconsole.
   }) + "\n");
   const expectedInstalls = [
     { agent: "claude", args: [] },
+    { agent: "claude", args: ["plugin", "marketplace", "add", "firstdraft/skills", "--scope", "user"] },
+    { agent: "claude", args: ["plugin", "install", "firstdraft@firstdraft-skills", "--scope", "user"] },
     { agent: "codex", args: ["--release", "latest"] },
-    { agent: "firstdraft", args: ["install", "--global", "--prefix", path.join(home, ".local"), `@firstdraft.com/cli@${pins.FIRSTDRAFT_CLI_VERSION}`] },
+    { agent: "codex", args: ["plugin", "marketplace", "add", "firstdraft/skills"] },
+    { agent: "codex", args: ["plugin", "add", "firstdraft@firstdraft-skills"] },
     { agent: "neonctl", args: ["install", "--global", "--prefix", path.join(home, ".local"), `neonctl@${pins.NEONCTL_VERSION}`] },
     { agent: "render", args: [`${downloads.render}ARCH.zip`] },
     { agent: "revyl", args: [`${downloads.revyl}ARCH`] },
@@ -234,7 +295,7 @@ writeFileSync(path.join(prefix, "bin", command), "#!/usr/bin/env node\\nconsole.
   const first = run("bash", [path.join(devcontainer, "setup-agents")]);
   assert.deepEqual(byAgent(installs()), expectedInstalls);
   assert(first.includes("claude 1.0.0") && first.includes("codex 1.0.0"));
-  assert(first.includes(`firstdraft ${pins.FIRSTDRAFT_CLI_VERSION}`));
+  assert(first.split("\n").includes(pluginVersion), "Setup must report the plugin CLI's version");
   verifyPreserved();
 
   publishFixtureRelease("2.0.0");
@@ -245,10 +306,10 @@ writeFileSync(path.join(prefix, "bin", command), "#!/usr/bin/env node\\nconsole.
   assert.equal(installs().length, 2 * expectedInstalls.length + 2);
   assert.deepEqual(byAgent(installs().slice(-expectedInstalls.length)), expectedInstalls, "Reruns must not reapply an obsolete client pin");
   assert(rerun.includes("claude 2.0.0") && rerun.includes("codex 2.0.0"));
-  assert(rerun.includes(`firstdraft ${pins.FIRSTDRAFT_CLI_VERSION}`));
+  assert(rerun.split("\n").includes(pluginVersion));
   verifyPreserved();
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }
 
-console.log("Offline native installer selectors, pinned CLIs, workshop helpers, rerun, and user-state preservation checks passed.");
+console.log("Offline native installer selectors, plugin installs and updates, pinned CLIs, workshop helpers, rerun, and user-state preservation checks passed.");
